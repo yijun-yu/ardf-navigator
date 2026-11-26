@@ -1,0 +1,19 @@
+{
+  "name": "ZJU 80m 无线电测向高德导航",
+  "short_name": "80m测向导航",
+  "description": "浙江大学三校区 80 米波段短距离无线电测向定位、自动听台测向与最优路线助手",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
