@@ -50,6 +50,7 @@ export class AudioInputController {
 
   // Pitch lock hysteresis state for live mic capture
   private lockedBin: number | null = null;
+  private lockedSilentFrames = 0;
   private challengerBin: number | null = null;
   private challengerStreak = 0;
 
@@ -95,7 +96,8 @@ export class AudioInputController {
       const source = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
-      analyser.smoothingTimeConstant = 0.15;
+      // Near-zero temporal smoothing prevents key-up tails from smearing short Morse gaps
+      analyser.smoothingTimeConstant = 0.05;
       source.connect(analyser);
 
       this.ctx = ctx;
@@ -103,6 +105,7 @@ export class AudioInputController {
       this.sourceNode = source;
       this.analyser = analyser;
       this.lockedBin = null;
+      this.lockedSilentFrames = 0;
       this.challengerBin = null;
       this.challengerStreak = 0;
 
@@ -144,10 +147,12 @@ export class AudioInputController {
         // Median magnitude across band = robust broadband noise floor
         const noiseFloor = Math.max(median(mags), 1e-6);
 
-        // Adaptive pitch lock with hysteresis so key-up silence doesn't jump pitch
+        // Adaptive pitch lock with hysteresis so key-up silence doesn't jump pitch,
+        // while still switching cleanly if initially locked onto ambient room hum.
         if (this.lockedBin === null) {
-          if (peakMag > noiseFloor * 2.2) {
+          if (peakMag > noiseFloor * 2.4) {
             this.lockedBin = peakBin;
+            this.lockedSilentFrames = 0;
           }
         } else {
           const curMag = Math.max(
@@ -155,10 +160,16 @@ export class AudioInputController {
             Math.pow(10, (freqBuf[this.lockedBin - 1] ?? -120) / 20),
             Math.pow(10, (freqBuf[this.lockedBin + 1] ?? -120) / 20),
           );
+          if (curMag < noiseFloor * 1.9) {
+            this.lockedSilentFrames++;
+          } else {
+            this.lockedSilentFrames = 0;
+          }
+
           if (
             Math.abs(peakBin - this.lockedBin) > 2 &&
-            peakMag > noiseFloor * 3.0 &&
-            peakMag > curMag * 2.0
+            peakMag > noiseFloor * 2.6 &&
+            peakMag > curMag * 1.45
           ) {
             if (
               this.challengerBin !== null &&
@@ -167,6 +178,7 @@ export class AudioInputController {
               this.challengerStreak++;
               if (this.challengerStreak >= 3) {
                 this.lockedBin = peakBin;
+                this.lockedSilentFrames = 0;
                 this.challengerBin = null;
                 this.challengerStreak = 0;
               }
@@ -176,6 +188,11 @@ export class AudioInputController {
             }
           } else {
             this.challengerStreak = 0;
+            // Release dead lock after ~2.5s of no energy at locked bin
+            if (this.lockedSilentFrames > 125) {
+              this.lockedBin = null;
+              this.lockedSilentFrames = 0;
+            }
           }
         }
 

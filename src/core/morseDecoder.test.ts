@@ -154,4 +154,72 @@ describe('ArdfMorseDecoder', () => {
     for (const s of noiseOnly) snap = decoder.feedFrame(s.frame);
     expect(snap.lockedStation).toBeNull();
   });
+
+  it('decodes Farnsworth-spaced ARDF beacons (4.6u letter gap, 11u cycle gap) without truncation', () => {
+    const farnsworthStations: StationId[] = ['1', '2', '3', '4', '5'];
+    for (let i = 0; i < farnsworthStations.length; i++) {
+      const id = farnsworthStations[i];
+      const decoder = new ArdfMorseDecoder();
+      const samples = generateSyntheticAudioFrames({
+        stationId: id,
+        wpm: 12.5,
+        snrDb: 18,
+        letterGapUnits: 4.6,
+        cycleGapUnits: 11.2,
+        phaseOffsetMs: 900,
+        durationMs: 18000,
+        seed: 800 + i,
+      });
+      let snap = decoder.getSnapshot();
+      for (const s of samples) snap = decoder.feedFrame(s.frame);
+      expect(snap.status, `Farnsworth station ${id}`).toBe('locked');
+      expect(snap.lockedStation, `Farnsworth station ${id}`).toBe(id);
+    }
+  });
+
+  it('decodes equal-gap continuous MO (-- [6.8u] --- [6.8u]) even when tuning in mid-cycle on O', () => {
+    const decoder = new ArdfMorseDecoder();
+    const samples = generateSyntheticAudioFrames({
+      stationId: 'MO',
+      wpm: 13.5,
+      snrDb: 18,
+      letterGapUnits: 6.8,
+      cycleGapUnits: 6.8,
+      phaseOffsetMs: 1250, // starts on 'O'
+      durationMs: 16000,
+      seed: 901,
+    });
+    let snap = decoder.getSnapshot();
+    for (const s of samples) snap = decoder.feedFrame(s.frame);
+    expect(snap.status).toBe('locked');
+    expect(snap.lockedStation).toBe('MO');
+  });
+
+  it('compensates indoor speaker reverb (+45ms pulse stretch / -45ms gap shrink) without false 0 match', () => {
+    const u = 96; // ~12.5 WPM
+    const delta = 45; // strong room echo
+    // MO5 with Farnsworth 4.6u letter gap and +45ms/-45ms reverb distortion
+    const onUnits = [3, 3, 3, 3, 3, 1, 1, 1, 1, 1];
+    const gapUnits = [1, 4.6, 1, 1, 4.6, 1, 1, 1, 1];
+    let t = 0;
+    const pulses: PulseRecord[] = onUnits.map((ou, idx) => {
+      const onMs = ou * u + delta;
+      const offMs = idx < gapUnits.length ? gapUnits[idx] * u - delta : 0;
+      const rec = { startMs: t, endMs: t + onMs, onMs, offMs };
+      t += onMs + offMs;
+      return rec;
+    });
+    const res = matchCycleToStation(pulses);
+    expect(res.stationId).toBe('5');
+    expect(res.confidence).toBeGreaterThanOrEqual(0.85);
+
+    // Heavy-keyed 5-dit burst (120ms ON / 70ms OFF) must still NEVER match '0'
+    const heavyFiveDits: PulseRecord[] = Array.from({ length: 5 }, (_, idx) => ({
+      startMs: idx * 190,
+      endMs: idx * 190 + 120,
+      onMs: 120,
+      offMs: idx < 4 ? 70 : 0,
+    }));
+    expect(matchCycleToStation(heavyFiveDits).stationId).toBeNull();
+  });
 });

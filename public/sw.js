@@ -1,4 +1,4 @@
-const CACHE_NAME = 'zju-ardf-nav-v4';
+const CACHE_NAME = 'zju-ardf-nav-v5';
 
 function scopeUrl(relPath) {
   return new URL(relPath, self.registration.scope).href;

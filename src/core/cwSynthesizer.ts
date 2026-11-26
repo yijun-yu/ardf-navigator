@@ -29,12 +29,14 @@ export function buildStationMorseSchedule(
   stationId: StationId,
   ditMs: number,
   options?: {
+    letterGapUnits?: number;
     cycleGapUnits?: number;
     /** Optional keying weight multiplier on ON durations (e.g. 1.15 for heavy keying) */
     weightRatio?: number;
   },
 ): StationSchedule {
   const spec = getStation(stationId);
+  const letterGapUnits = options?.letterGapUnits ?? 3;
   const cycleGapUnits = options?.cycleGapUnits ?? 7;
   const weight = options?.weightRatio ?? 1.0;
   const letters = spec.morse.trim().split(/\s+/);
@@ -63,10 +65,10 @@ export function buildStationMorseSchedule(
           kind: 'intra',
         });
       } else if (hasNextLetter) {
-        // Inter-letter gap (3 dit units)
+        // Inter-letter gap (default 3 dit units; 4.5-7u for Farnsworth ARDF beacons)
         segments.push({
           on: false,
-          durationMs: 3 * ditMs,
+          durationMs: letterGapUnits * ditMs,
           kind: 'letter',
         });
       } else {
@@ -138,6 +140,7 @@ export interface SyntheticFrameOptions {
   startTimeMs?: number;
   /** Start phase offset into the Morse cycle in ms (simulates mid-cycle tune-in) */
   phaseOffsetMs?: number;
+  letterGapUnits?: number;
   cycleGapUnits?: number;
   weightRatio?: number;
   /** Random impulse static pop probability per frame (0..1) */
@@ -173,6 +176,7 @@ export function generateSyntheticAudioFrames(
   const rng = createSeededRng(opts.seed ?? 42);
 
   const schedule = buildStationMorseSchedule(opts.stationId, ditMs, {
+    letterGapUnits: opts.letterGapUnits,
     cycleGapUnits: opts.cycleGapUnits,
     weightRatio: opts.weightRatio,
   });

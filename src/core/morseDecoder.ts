@@ -11,26 +11,27 @@ interface StationTemplate {
   pulseCount: number;
   /** Expected pulse durations in dot units (1 = dit, 3 = dah) */
   onUnits: number[];
-  /** Expected internal gap durations in dot units (1 = intra-char, 3 = inter-letter) */
-  gapUnits: number[];
-  /** Precomputed natural logs for fast scoring */
+  /** Precomputed natural logs of onUnits */
   logOnUnits: number[];
-  logGapUnits: number[];
+  /** True for inter-letter gaps (3u standard, up to ~7u Farnsworth); false for 1u intra gaps */
+  isLetterGap: boolean[];
+  /** True for templates composed solely of dahs ('0' and 'MO') */
+  allDahs: boolean;
 }
 
 function buildTemplates(): StationTemplate[] {
   return STATIONS.map((st) => {
     const letters = st.morse.trim().split(/\s+/);
     const onUnits: number[] = [];
-    const gapUnits: number[] = [];
+    const isLetterGap: boolean[] = [];
     for (let li = 0; li < letters.length; li++) {
       const sym = letters[li];
       for (let si = 0; si < sym.length; si++) {
         onUnits.push(sym[si] === '-' ? 3 : 1);
         if (si < sym.length - 1) {
-          gapUnits.push(1);
+          isLetterGap.push(false);
         } else if (li < letters.length - 1) {
-          gapUnits.push(3);
+          isLetterGap.push(true);
         }
       }
     }
@@ -38,9 +39,9 @@ function buildTemplates(): StationTemplate[] {
       id: st.id,
       pulseCount: onUnits.length,
       onUnits,
-      gapUnits,
       logOnUnits: onUnits.map((v) => Math.log(v)),
-      logGapUnits: gapUnits.map((v) => Math.log(v)),
+      isLetterGap,
+      allDahs: onUnits.every((u) => u === 3),
     };
   });
 }
@@ -63,19 +64,13 @@ export interface CycleMatchResult {
   symbols: string;
 }
 
-/**
- * Score a candidate cycle of completed pulses against all 11 ARDF station
- * templates using continuous log-time template matching.
- *
- * Key properties:
- * - Speed-invariant across ~5 to 35 WPM (solves optimal dot unit analytically).
- * - Tolerates moderate keying-weight skew (heavy/light receiver filter ringing).
- * - Explicitly distinguishes 0 ('-----', uniform 1u internal gaps) from
- *   MO ('-- ---', 3u letter space between 2nd and 3rd dah).
- * - Rejects partial fragments like '.....' from matching 0 or MO via ON/OFF
- *   ratio consistency penalty.
- */
-export function matchCycleToStation(pulses: PulseRecord[]): CycleMatchResult {
+interface DetailedMatchResult extends CycleMatchResult {
+  uAvg: number;
+  uIntra: number;
+  uLetter: number | null;
+}
+
+function matchCycleDetailed(pulses: PulseRecord[]): DetailedMatchResult {
   const m = pulses.length;
   if (m < 5 || m > 10) {
     return {
@@ -84,45 +79,120 @@ export function matchCycleToStation(pulses: PulseRecord[]): CycleMatchResult {
       secondBestScore: 0,
       estimatedWpm: null,
       symbols: '',
+      uAvg: 100,
+      uIntra: 100,
+      uLetter: null,
     };
-  }
-
-  const logOn = pulses.map((p) => Math.log(Math.max(15, p.onMs)));
-  const logGap: number[] = [];
-  for (let i = 0; i < m - 1; i++) {
-    logGap.push(Math.log(Math.max(15, pulses[i].offMs)));
   }
 
   let bestId: StationId | null = null;
   let bestScore = 0;
   let secondScore = 0;
-  let bestU = 100;
+  let bestUAvg = 100;
+  let bestUIntra = 100;
+  let bestULetter: number | null = null;
 
   for (let ti = 0; ti < TEMPLATES.length; ti++) {
     const tpl = TEMPLATES[ti];
     if (tpl.pulseCount !== m) continue;
 
-    // Optimal log(u_on) and log(u_off) for this template
-    let sumOn = 0;
+    // 1. Estimate additive edge-stretch bias `delta` (from room reverb, FFT window
+    //    skirt, or heavy/light keying) using the reverb-invariant period sum:
+    //    (on + intra) = (onUnits + 1) * u  =>  delta cancels out completely!
+    let sumRawOn = 0;
+    let sumOnUnits = 0;
     for (let i = 0; i < m; i++) {
-      sumOn += logOn[i] - tpl.logOnUnits[i];
+      sumRawOn += Math.max(15, pulses[i].onMs);
+      sumOnUnits += tpl.onUnits[i];
     }
-    const logUOn = sumOn / m;
-
-    let sumGap = 0;
+    let sumRawIntra = 0;
+    let intraCount = 0;
+    let letterCount = 0;
     for (let i = 0; i < m - 1; i++) {
-      sumGap += logGap[i] - tpl.logGapUnits[i];
+      if (tpl.isLetterGap[i]) {
+        letterCount++;
+      } else {
+        sumRawIntra += Math.max(15, pulses[i].offMs);
+        intraCount++;
+      }
     }
-    const logUGap = sumGap / (m - 1);
+    if (intraCount === 0) continue;
+
+    const meanRawOn = sumRawOn / m;
+    const meanOnUnits = sumOnUnits / m;
+    const meanRawIntra = sumRawIntra / intraCount;
+    const uPeriod = (meanRawOn + meanRawIntra) / (meanOnUnits + 1);
+
+    // Physical speed sanity check (~4.0 WPM to 42 WPM)
+    if (uPeriod < 28 || uPeriod > 300) continue;
+
+    // Additive edge bias: positive = pulses stretched & gaps narrowed (reverb / heavy keying)
+    const rawDelta = uPeriod - meanRawIntra;
+    const normDelta = rawDelta / uPeriod;
+
+    // Guard against unphysical edge bias:
+    // - For all-dah stations ('0', 'MO'), reject negative bias < -0.32u so 5-dit bursts
+    //   (even heavy-keyed 120ms/70ms -> normDelta = -0.47) can NEVER match '0'.
+    // - Allow up to +0.64u positive bias for strong indoor speaker reverb.
+    const minNormDelta = tpl.allDahs ? -0.32 : -0.42;
+    if (normDelta < minNormDelta || normDelta > 0.64) continue;
+
+    // Compensate additive edge bias symmetrically before log-space template scoring
+    const appliedDelta = rawDelta;
+    const logOn: number[] = new Array(m);
+    for (let i = 0; i < m; i++) {
+      logOn[i] = Math.log(Math.max(15, pulses[i].onMs - appliedDelta));
+    }
+    const logGap: number[] = new Array(m - 1);
+    for (let i = 0; i < m - 1; i++) {
+      logGap[i] = Math.log(Math.max(15, pulses[i].offMs + appliedDelta));
+    }
+
+    // 2. Optimal log(u_on), log(u_intra), and Farnsworth log(u_letter)
+    let sumLogOn = 0;
+    for (let i = 0; i < m; i++) {
+      sumLogOn += logOn[i] - tpl.logOnUnits[i];
+    }
+    const logUOn = sumLogOn / m;
+
+    let sumLogIntra = 0;
+    let sumLogLetter = 0;
+    for (let i = 0; i < m - 1; i++) {
+      if (tpl.isLetterGap[i]) {
+        sumLogLetter += logGap[i];
+      } else {
+        sumLogIntra += logGap[i];
+      }
+    }
+    const logUIntra = sumLogIntra / intraCount;
+    const logULetter = letterCount > 0 ? sumLogLetter / letterCount : null;
 
     const uOn = Math.exp(logUOn);
-    const uGap = Math.exp(logUGap);
-    const uAvg = Math.sqrt(uOn * uGap);
+    const uIntra = Math.exp(logUIntra);
+    const uLetter = logULetter !== null ? Math.exp(logULetter) : null;
+    const uAvg = Math.sqrt(uOn * uIntra);
 
-    // Physical speed sanity check (roughly 4.5 WPM to 38 WPM)
-    if (uAvg < 30 || uAvg > 270) continue;
+    if (uAvg < 28 || uAvg > 300) continue;
 
-    // Timing residual MSE in log space + worst-element structural guard
+    const ratioDrift = logUOn - logUIntra;
+    if (Math.abs(ratioDrift) > 0.55) continue;
+
+    // Farnsworth letter-gap check: inter-letter pause must be clearly longer than intra gap
+    let letterPriorPen = 0;
+    if (uLetter !== null && logULetter !== null) {
+      const letterRatioIntra = uLetter / uIntra;
+      const letterRatioAvg = uLetter / uAvg;
+      if (letterRatioIntra < 1.95 || letterRatioAvg > 11.5) continue;
+      if (letterRatioIntra < 2.3) {
+        const d = Math.log(2.3) - Math.log(letterRatioIntra);
+        letterPriorPen = 4.0 * d * d;
+      } else if (letterRatioAvg > 8.2) {
+        const d = Math.log(letterRatioAvg) - Math.log(8.2);
+        letterPriorPen = 1.5 * d * d;
+      }
+    }
+
+    // Per-element log-space timing residuals + structural guards
     let errSqSum = 0;
     let maxOnErr = 0;
     for (let i = 0; i < m; i++) {
@@ -131,42 +201,57 @@ export function matchCycleToStation(pulses: PulseRecord[]): CycleMatchResult {
       if (absR > maxOnErr) maxOnErr = absR;
       errSqSum += r * r;
     }
-    let maxGapErr = 0;
+
+    let maxIntraErr = 0;
+    let maxLetterErr = 0;
     for (let i = 0; i < m - 1; i++) {
-      const r = logGap[i] - (logUGap + tpl.logGapUnits[i]);
-      const absR = Math.abs(r);
-      if (absR > maxGapErr) maxGapErr = absR;
-      // Slightly higher weight on internal gap structure so MO vs 0 separates decisively
-      errSqSum += 1.35 * r * r;
+      if (tpl.isLetterGap[i] && logULetter !== null) {
+        const r = logGap[i] - logULetter;
+        const absR = Math.abs(r);
+        if (absR > maxLetterErr) maxLetterErr = absR;
+        errSqSum += 1.35 * r * r;
+      } else {
+        const r = logGap[i] - logUIntra;
+        const absR = Math.abs(r);
+        if (absR > maxIntraErr) maxIntraErr = absR;
+        errSqSum += 1.35 * r * r;
+      }
     }
 
-    // Coupling penalty between ON unit and OFF unit (prevents '.....' matching '-----')
-    const ratioDrift = logUOn - logUGap;
-
-    // Structural guard: a dit (~1u) must never be allowed to match a dah (~3u)
-    // (ln(3) ≈ 1.10; even ±50% timing jitter stays below 0.45).
-    if (maxOnErr > 0.62 || maxGapErr > 0.68 || Math.abs(ratioDrift) > 0.62) {
+    // Structural guards:
+    // - A dit (~1u) must never match a dah (~3u) (ln(3) ≈ 1.10)
+    // - A letter space (~3u..7u) must never sneak into an intra-gap slot (separates MO vs 0)
+    // - Multiple letter spaces within MOE..MO5 must be mutually consistent
+    if (maxOnErr > 0.62 || maxIntraErr > 0.68 || maxLetterErr > 0.55) {
       continue;
     }
 
+    // Mild penalty for extreme edge stretch so clean matches beat stretched coincidences
+    const excessDelta = Math.max(0, Math.abs(normDelta) - 0.28);
+    const deltaPen = 1.4 * excessDelta * excessDelta;
+
     const weightCount = m + 1.35 * (m - 1) + 1.8;
-    const totalMse = (errSqSum + 1.8 * ratioDrift * ratioDrift) / weightCount;
+    const totalMse =
+      (errSqSum + 1.8 * ratioDrift * ratioDrift + letterPriorPen + deltaPen) /
+      weightCount;
     const score = Math.exp(-4.2 * totalMse);
 
     if (score > bestScore) {
       secondScore = bestScore;
       bestScore = score;
       bestId = tpl.id;
-      bestU = uAvg;
+      bestUAvg = uAvg;
+      bestUIntra = uIntra;
+      // Report raw (uncompensated) letter gap so boundary checks match actual silence ms
+      bestULetter = uLetter !== null ? Math.max(uIntra * 1.9, uLetter - appliedDelta) : null;
     } else if (score > secondScore) {
       secondScore = score;
     }
   }
 
-  // Build human-readable symbol string using best estimated unit
-  const symbols = formatPulsesAsSymbols(pulses, bestU);
-
+  const symbols = formatPulsesAsSymbols(pulses, bestUAvg);
   const margin = bestScore - secondScore;
+
   if (!bestId || bestScore < 0.66 || margin < 0.12) {
     return {
       stationId: null,
@@ -174,6 +259,9 @@ export function matchCycleToStation(pulses: PulseRecord[]): CycleMatchResult {
       secondBestScore: Math.round(secondScore * 100) / 100,
       estimatedWpm: null,
       symbols,
+      uAvg: bestUAvg,
+      uIntra: bestUIntra,
+      uLetter: bestULetter,
     };
   }
 
@@ -181,53 +269,47 @@ export function matchCycleToStation(pulses: PulseRecord[]): CycleMatchResult {
     stationId: bestId,
     confidence: Math.round(bestScore * 100) / 100,
     secondBestScore: Math.round(secondScore * 100) / 100,
-    estimatedWpm: Math.round((1200 / bestU) * 10) / 10,
+    estimatedWpm: Math.round((1200 / bestUAvg) * 10) / 10,
     symbols,
+    uAvg: bestUAvg,
+    uIntra: bestUIntra,
+    uLetter: bestULetter,
+  };
+}
+
+/**
+ * Score a candidate cycle of completed pulses against all 11 ARDF station
+ * templates using continuous, Farnsworth-invariant log-time template matching.
+ *
+ * Key properties:
+ * - Speed-invariant across ~4 to 42 WPM (solves optimal dot unit analytically).
+ * - Farnsworth-invariant: supports both standard 3u inter-letter gaps and
+ *   extended 4u-7u ARDF beacon letter pauses without false truncation.
+ * - Explicitly distinguishes 0 ('-----', uniform 1u internal gaps) from
+ *   MO ('-- ---', extended letter space between 2nd and 3rd dah).
+ * - Rejects heavy-keyed 5-dit noise bursts from matching 0 or MO.
+ */
+export function matchCycleToStation(pulses: PulseRecord[]): CycleMatchResult {
+  const det = matchCycleDetailed(pulses);
+  return {
+    stationId: det.stationId,
+    confidence: det.confidence,
+    secondBestScore: det.secondBestScore,
+    estimatedWpm: det.estimatedWpm,
+    symbols: det.symbols,
   };
 }
 
 function formatPulsesAsSymbols(pulses: PulseRecord[], unitMs: number): string {
-  const safeU = Math.max(30, Math.min(270, unitMs));
+  const safeU = Math.max(28, Math.min(300, unitMs));
   let out = '';
   for (let i = 0; i < pulses.length; i++) {
     out += pulses[i].onMs >= safeU * 1.9 ? '—' : '·';
-    if (i < pulses.length - 1 && pulses[i].offMs >= safeU * 2.0) {
+    if (i < pulses.length - 1 && pulses[i].offMs >= safeU * 1.95) {
       out += ' ';
     }
   }
   return out;
-}
-
-/**
- * Estimate local dot unit of a candidate pulse segment to determine whether
- * a silence gap is a full inter-cycle break (>= ~4.2u) vs an intra/letter gap.
- */
-function estimateSegmentDotUnit(pulses: PulseRecord[]): number {
-  const ons = pulses.map((p) => p.onMs).sort((a, b) => a - b);
-  const gaps = pulses
-    .slice(0, -1)
-    .map((p) => p.offMs)
-    .filter((g) => g > 0)
-    .sort((a, b) => a - b);
-
-  const minOn = ons[0];
-  const maxOn = ons[ons.length - 1];
-
-  // If mixed dits and dahs exist, shortest ON is ~1u and longest ON is ~3u
-  if (maxOn / Math.max(1, minOn) >= 1.85) {
-    return Math.max(32, Math.min(250, 0.5 * (minOn + maxOn / 3)));
-  }
-
-  // Uniform ON durations (e.g. '0' or 'MO' = all dahs, or partial dits)
-  const medOn = ons[Math.floor(ons.length / 2)];
-  if (gaps.length >= 2) {
-    const shortGap = 0.5 * (gaps[0] + gaps[1]);
-    if (medOn / Math.max(1, shortGap) >= 1.8) {
-      return Math.max(32, Math.min(250, 0.5 * (shortGap + medOn / 3)));
-    }
-  }
-
-  return Math.max(32, Math.min(250, medOn / 2.2));
 }
 
 interface MetricSample {
@@ -242,8 +324,10 @@ interface VoteEntry {
   timestampMs: number;
 }
 
+const MAX_HISTORY_PULSES = 24;
+
 /**
- * Streaming, noise-resistant, speed-adaptive 80m ARDF Morse decoder.
+ * Streaming, noise-resistant, speed- & Farnsworth-adaptive 80m ARDF Morse decoder.
  * Feed AudioFrames at ~40-60 Hz; query snapshot for real-time station lock.
  */
 export class ArdfMorseDecoder {
@@ -257,12 +341,12 @@ export class ArdfMorseDecoder {
   private stateStartMs = 0;
   private lastFrameMs = 0;
 
-  // Pending pulse awaiting deglitch confirmation
   private activeOnStartMs: number | null = null;
   private lastCompletedOnEndMs: number | null = null;
 
-  // Current cycle pulses being accumulated
-  private cyclePulses: PulseRecord[] = [];
+  // Rolling ring buffer of completed pulses (never blindly truncated on Farnsworth gaps)
+  private pulseHistory: PulseRecord[] = [];
+  private lastVotedEndMs = -1;
   private recentVotes: VoteEntry[] = [];
 
   private lockedStation: StationId | null = null;
@@ -280,7 +364,8 @@ export class ArdfMorseDecoder {
     this.lastFrameMs = 0;
     this.activeOnStartMs = null;
     this.lastCompletedOnEndMs = null;
-    this.cyclePulses = [];
+    this.pulseHistory = [];
+    this.lastVotedEndMs = -1;
     this.recentVotes = [];
     this.lockedStation = null;
     this.candidateStation = null;
@@ -297,25 +382,37 @@ export class ArdfMorseDecoder {
     }
     this.lastFrameMs = now;
 
-    // 1. Update rolling SNR envelope window (last 2.8 seconds)
+    // 1. Update rolling SNR envelope window (last 4.8 seconds so slow dah-heavy
+    //    ARDF cycles like MO/MO5 always include true inter-cycle silence)
     const metric = Math.max(0, Math.min(35, frame.snrDb));
     this.metricWindow.push({ timestampMs: now, value: metric });
-    const cutoff = now - 2800;
-    while (this.metricWindow.length > 0 && this.metricWindow[0].timestampMs < cutoff) {
+    const cutoff = now - 4800;
+    while (
+      this.metricWindow.length > 0 &&
+      this.metricWindow[0].timestampMs < cutoff
+    ) {
       this.metricWindow.shift();
     }
 
     // 2. Adaptive hysteresis Schmitt trigger
     let nextRaw = this.rawKeyDown;
     if (this.metricWindow.length >= 6) {
-      const sorted = this.metricWindow.map((s) => s.value).sort((a, b) => a - b);
-      const lowP = sorted[Math.floor(sorted.length * 0.2)];
-      const highP = sorted[Math.floor(sorted.length * 0.9)];
+      const sorted = this.metricWindow
+        .map((s) => s.value)
+        .sort((a, b) => a - b);
+      // 12th percentile catches true silence even under room reverb or high duty cycle
+      const lowP = sorted[Math.floor(sorted.length * 0.12)];
+      const highP = sorted[Math.floor(sorted.length * 0.92)];
       const spread = highP - lowP;
 
-      if (spread >= 4.2 && highP >= 5.2) {
-        const onTh = lowP + 0.56 * spread;
-        const offTh = lowP + 0.36 * spread;
+      if (spread >= 3.5 && highP >= 4.8) {
+        // At high SNR (e.g. clean speaker or direct cable), thresholding at 39% of dB
+        // range sits -20 dB down on the FFT window / room reverb skirt, inflating ON
+        // pulses by +40ms and shrinking gaps by -40ms. Clamping near -6.5/-10 dB below
+        // highP measures edges right around the 50% linear-amplitude midpoint while
+        // falling back seamlessly to proportional thresholds at low SNR.
+        const onTh = Math.max(lowP + 0.56 * spread, highP - 5.5);
+        const offTh = Math.max(lowP + 0.42 * spread, highP - 8.5);
         if (!this.rawKeyDown && metric >= onTh) {
           nextRaw = true;
         } else if (this.rawKeyDown && metric <= offTh) {
@@ -333,28 +430,31 @@ export class ArdfMorseDecoder {
       this.stateStartMs = now;
     }
 
-    // 3. Deglitch short transient spikes (< 26ms) and micro-dropouts (< 26ms)
+    // 3. Deglitch short transient spikes and micro-dropouts
     const dwellMs = now - this.stateStartMs;
-    if (this.rawKeyDown && !this.debouncedKeyDown && dwellMs >= this.minPulseMs) {
-      // Rising edge confirmed (actually started at stateStartMs)
+    if (
+      this.rawKeyDown &&
+      !this.debouncedKeyDown &&
+      dwellMs >= this.minPulseMs
+    ) {
       this.onKeyDown(this.stateStartMs);
-    } else if (!this.rawKeyDown && this.debouncedKeyDown && dwellMs >= this.minGapMs) {
-      // Falling edge confirmed (actually ended at stateStartMs)
+    } else if (
+      !this.rawKeyDown &&
+      this.debouncedKeyDown &&
+      dwellMs >= this.minGapMs
+    ) {
       this.onKeyUp(this.stateStartMs);
     }
 
     // 4. Live silence check to finalize a completed cycle without waiting for next pulse
     if (!this.debouncedKeyDown && this.lastCompletedOnEndMs !== null) {
       const silentMs = now - this.lastCompletedOnEndMs;
-      if (this.cyclePulses.length >= 5) {
-        const unitMs = estimateSegmentDotUnit(this.cyclePulses);
-        const cycleBreakMs = Math.max(240, 4.1 * unitMs);
-        if (silentMs >= cycleBreakMs) {
-          this.flushCycle(now);
-        }
-      } else if (this.cyclePulses.length > 0 && silentMs >= 900) {
-        // Discard incomplete mid-cycle fragment after long silence
-        this.cyclePulses = [];
+      const lastIdx = this.pulseHistory.length - 1;
+      if (
+        lastIdx >= 4 &&
+        this.pulseHistory[lastIdx].endMs > this.lastVotedEndMs
+      ) {
+        this.tryEmitCycleAt(lastIdx, silentMs, null, now);
       }
 
       // Expire stale lock if signal completely vanishes for > 5 seconds
@@ -373,24 +473,26 @@ export class ArdfMorseDecoder {
   private onKeyDown(edgeMs: number): void {
     this.debouncedKeyDown = true;
 
-    if (this.cyclePulses.length > 0 && this.lastCompletedOnEndMs !== null) {
+    const lastIdx = this.pulseHistory.length - 1;
+    if (lastIdx >= 0 && this.lastCompletedOnEndMs !== null) {
       const gapMs = Math.max(0, edgeMs - this.lastCompletedOnEndMs);
-      const prev = this.cyclePulses[this.cyclePulses.length - 1];
-      prev.offMs = gapMs;
+      this.pulseHistory[lastIdx].offMs = gapMs;
 
-      // Check if that gap was actually a cycle boundary before starting the new pulse
-      if (this.cyclePulses.length >= 5) {
-        const unitMs = estimateSegmentDotUnit(this.cyclePulses);
-        const cycleBreakMs = Math.max(240, 4.1 * unitMs);
-        if (gapMs >= cycleBreakMs) {
-          this.flushCycle(edgeMs);
+      // If a huge silence gap (> 2.6s) separates transmissions, reset history cleanly
+      if (gapMs > 2600) {
+        if (
+          lastIdx >= 4 &&
+          this.pulseHistory[lastIdx].endMs > this.lastVotedEndMs
+        ) {
+          this.tryEmitCycleAt(lastIdx, gapMs, null, edgeMs);
         }
-      } else {
-        // Discard short mid-cycle startup fragment if followed by a huge pause
-        const maxOn = Math.max(...this.cyclePulses.map((p) => p.onMs));
-        if (gapMs >= Math.max(320, maxOn * 1.85)) {
-          this.cyclePulses = [];
-        }
+        this.pulseHistory = [];
+      } else if (
+        lastIdx >= 4 &&
+        this.pulseHistory[lastIdx].endMs > this.lastVotedEndMs
+      ) {
+        // Check if the completed gap was a clean cycle break (in case live silence didn't trigger yet)
+        this.tryEmitCycleAt(lastIdx, gapMs, null, edgeMs);
       }
     }
 
@@ -406,52 +508,150 @@ export class ArdfMorseDecoder {
 
     // Ignore absurdly long continuous carrier (> 1.8s = not Morse keying)
     if (onMs > 1800) {
-      this.cyclePulses = [];
+      this.pulseHistory = [];
       this.lastCompletedOnEndMs = edgeMs;
       return;
     }
 
-    this.cyclePulses.push({
+    this.pulseHistory.push({
       startMs: edgeMs - onMs,
       endMs: edgeMs,
       onMs,
       offMs: 0,
     });
+    if (this.pulseHistory.length > MAX_HISTORY_PULSES) {
+      this.pulseHistory.shift();
+    }
     this.lastCompletedOnEndMs = edgeMs;
 
-    // If buffer overflowed > 11 pulses (e.g. noise click split a cycle pause),
-    // split at the largest internal gap to recover immediately
-    if (this.cyclePulses.length > 11) {
-      let maxGapIdx = -1;
-      let maxGap = 0;
-      for (let i = 0; i < this.cyclePulses.length - 1; i++) {
-        if (this.cyclePulses[i].offMs > maxGap) {
-          maxGap = this.cyclePulses[i].offMs;
-          maxGapIdx = i;
-        }
-      }
-      if (maxGapIdx >= 4 && maxGapIdx <= 9) {
-        const head = this.cyclePulses.slice(0, maxGapIdx + 1);
-        const tail = this.cyclePulses.slice(maxGapIdx + 1);
-        this.cyclePulses = head;
-        this.flushCycle(edgeMs);
-        this.cyclePulses = tail;
-      } else {
-        this.cyclePulses = this.cyclePulses.slice(-10);
-      }
+    // Look back 1 pulse: now that we know the duration of the newly arrived pulse
+    // (dit vs dah), we can definitively disambiguate equal-gap 'MO' (where next
+    // pulse is a dah starting the next 'M') from 'MOE..MO5' (where next pulse is a dit).
+    const prevIdx = this.pulseHistory.length - 2;
+    if (
+      prevIdx >= 4 &&
+      this.pulseHistory[prevIdx].endMs > this.lastVotedEndMs
+    ) {
+      const gapAfterPrev = this.pulseHistory[prevIdx].offMs;
+      this.tryEmitCycleAt(prevIdx, gapAfterPrev, onMs, edgeMs);
     }
   }
 
-  private flushCycle(nowMs: number): void {
-    const segment = this.cyclePulses;
-    this.cyclePulses = [];
-    if (segment.length < 5 || segment.length > 10) return;
+  /**
+   * Search candidate cycles of length 5..10 ending at `endIdx` in `pulseHistory`
+   * and vote if a valid boundary-verified station match is found.
+   */
+  private tryEmitCycleAt(
+    endIdx: number,
+    followingGapMs: number,
+    nextPulseOnMs: number | null,
+    nowMs: number,
+  ): boolean {
+    if (endIdx < 4 || endIdx >= this.pulseHistory.length) return false;
+    if (this.pulseHistory[endIdx].endMs <= this.lastVotedEndMs) return false;
 
-    const match = matchCycleToStation(segment);
+    let chosen: {
+      det: DetailedMatchResult;
+      length: number;
+      segment: PulseRecord[];
+    } | null = null;
+    let hasPendingLongerMatch = false;
+
+    for (let len = 10; len >= 5; len--) {
+      const startIdx = endIdx - len + 1;
+      if (startIdx < 0) continue;
+
+      const segment = this.pulseHistory.slice(startIdx, endIdx + 1);
+      const det = matchCycleDetailed(segment);
+      if (!det.stationId) continue;
+
+      // 1. Verify preceding boundary so we never match a mid-cycle suffix
+      if (startIdx > 0) {
+        const prevGap = this.pulseHistory[startIdx - 1].offMs;
+        const minPrevGap =
+          det.uLetter !== null
+            ? Math.max(det.uIntra * 2.2, det.uLetter * 0.72)
+            : det.uIntra * 2.5;
+        if (prevGap < minPrevGap) continue;
+      }
+
+      // 2. Verify following boundary (Farnsworth-safe!)
+      const followOk = this.isValidFollowingBoundary(
+        det,
+        followingGapMs,
+        nextPulseOnMs,
+      );
+      if (!followOk) {
+        // If a longer callsign (e.g. MO5 len=10) already matches cleanly and is only
+        // waiting for silence to reach its cycle break, do NOT let a shorter suffix
+        // (like the trailing 5 dits under heavy reverb looking like fast '0') preempt it!
+        if (len > 5 && nextPulseOnMs === null && det.confidence >= 0.7) {
+          hasPendingLongerMatch = true;
+        }
+        continue;
+      }
+
+      if (len === 5 && hasPendingLongerMatch) {
+        continue;
+      }
+
+      // Prefer higher confidence; break close ties in favor of longer complete callsign
+      if (
+        !chosen ||
+        det.confidence > chosen.det.confidence + 0.04 ||
+        (Math.abs(det.confidence - chosen.det.confidence) <= 0.04 &&
+          len > chosen.length)
+      ) {
+        chosen = { det, length: len, segment };
+      }
+    }
+
+    if (!chosen) return false;
+
+    this.lastVotedEndMs = this.pulseHistory[endIdx].endMs;
+    this.recordMatch(chosen.det, nowMs);
+    return true;
+  }
+
+  private isValidFollowingBoundary(
+    det: DetailedMatchResult,
+    followingGapMs: number,
+    nextPulseOnMs: number | null,
+  ): boolean {
+    if (det.stationId === 'MO') {
+      const letterG = det.uLetter ?? 3 * det.uIntra;
+      const clearSilenceBreak = Math.max(260, 4.3 * det.uAvg, 1.42 * letterG);
+      if (followingGapMs >= clearSilenceBreak) {
+        return true;
+      }
+      // Equal-gap MO (e.g. M [610ms] O [610ms] M [610ms] O):
+      // Confirmed as soon as the following pulse completes as a DAH (next 'M'),
+      // because MOE/MOI/MOS/MOH/MO5 always follow 'O' with a DIT!
+      if (
+        nextPulseOnMs !== null &&
+        followingGapMs >= Math.max(260, 3.8 * det.uAvg, 0.78 * letterG) &&
+        nextPulseOnMs >= det.uAvg * 1.9
+      ) {
+        return true;
+      }
+      return false;
+    }
+
+    if (det.uLetter !== null) {
+      // MOE, MOI, MOS, MOH, MO5: following cycle gap must clearly exceed letter gap
+      const minFollow = Math.max(260, 4.2 * det.uAvg, 1.28 * det.uLetter);
+      return followingGapMs >= minFollow;
+    }
+
+    // 6, 7, 8, 9, 0 (single-character digits, no internal letter gaps)
+    const minFollow = Math.max(240, 4.0 * det.uAvg);
+    return followingGapMs >= minFollow;
+  }
+
+  private recordMatch(match: DetailedMatchResult, nowMs: number): void {
     if (match.symbols) {
       this.recentSymbols = match.symbols;
     }
-
     if (!match.stationId) return;
 
     this.candidateStation = match.stationId;
@@ -506,7 +706,10 @@ export class ArdfMorseDecoder {
     let topAvgConf = 0;
     for (const [id, info] of counts.entries()) {
       const avg = info.sumConf / info.count;
-      if (info.count > topCount || (info.count === topCount && avg > topAvgConf)) {
+      if (
+        info.count > topCount ||
+        (info.count === topCount && avg > topAvgConf)
+      ) {
         topId = id;
         topCount = info.count;
         topAvgConf = avg;
@@ -517,10 +720,10 @@ export class ArdfMorseDecoder {
       const id = this.recentVotes[n - 1].stationId;
       const avgConf =
         0.5 *
-        (this.recentVotes[n - 1].confidence + this.recentVotes[n - 2].confidence);
+        (this.recentVotes[n - 1].confidence +
+          this.recentVotes[n - 2].confidence);
       this.lockedStation = id;
       this.confidence = Math.round(avgConf * 100) / 100;
-      // Count trailing streak
       let streak = 0;
       for (let i = n - 1; i >= 0 && this.recentVotes[i].stationId === id; i--) {
         streak++;
@@ -540,7 +743,7 @@ export class ArdfMorseDecoder {
     let status: MorseLockStatus = 'listening';
     if (this.lockedStation) {
       status = 'locked';
-    } else if (this.candidateStation || this.cyclePulses.length > 0) {
+    } else if (this.candidateStation || this.pulseHistory.length > 0) {
       status = 'identifying';
     }
 
