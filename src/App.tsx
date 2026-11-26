@@ -1082,34 +1082,56 @@ export function App() {
 
   return (
     <div className="app-shell">
-      {/* Top HUD bar */}
+      {/* Top HUD bar (2 compact rows on portrait phones, single row on desktop) */}
       <header className="top-bar">
-        <div className="campus-tabs" role="tablist" aria-label="切换浙大校区">
-          {CAMPUS_LIST.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              role="tab"
-              aria-selected={c.id === session.campusId}
-              className={`campus-tab ${c.id === session.campusId ? 'active' : ''}`}
-              onClick={() => handleCampusChange(c.id)}
+        <div className="top-bar-primary">
+          <div className="campus-tabs" role="tablist" aria-label="切换浙大校区">
+            {CAMPUS_LIST.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                role="tab"
+                aria-selected={c.id === session.campusId}
+                className={`campus-tab ${c.id === session.campusId ? 'active' : ''}`}
+                onClick={() => handleCampusChange(c.id)}
+              >
+                {c.shortName}
+              </button>
+            ))}
+          </div>
+
+          <div className="top-bar-sys">
+            <span
+              className={`status-pill ${gps ? 'ok' : gpsError ? 'bad' : 'wait'}`}
+              title={gpsError ?? 'GPS 定位状态'}
             >
-              {c.shortName}
+              {gps ? `±${gps.accuracy}m` : 'GPS'}
+            </span>
+
+            <button
+              type="button"
+              className={`icon-btn ${wakeLocked ? 'active' : ''}`}
+              onClick={handleToggleWakeLock}
+              title={wakeLocked ? '屏幕已常亮' : '开启屏幕常亮'}
+            >
+              ☀
             </button>
-          ))}
+
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => setShowSettingsModal(true)}
+              title="高德Key与传感器设置"
+            >
+              ⚙
+            </button>
+          </div>
         </div>
 
-        <div className="status-pills">
-          <span
-            className={`status-pill ${gps ? 'ok' : gpsError ? 'bad' : 'wait'}`}
-            title={gpsError ?? 'GPS 定位状态'}
-          >
-            {gps ? `±${gps.accuracy}m` : 'GPS'}
-          </span>
-
+        <div className="top-bar-tools">
           <button
             type="button"
-            className={`status-pill vf-toggle ${virtualScenario ? 'active' : ''}`}
+            className={`status-pill tool-pill vf-toggle ${virtualScenario ? 'active' : ''}`}
             onClick={() =>
               virtualScenario
                 ? handleExitVirtualField()
@@ -1122,7 +1144,7 @@ export function App() {
 
           <button
             type="button"
-            className={`status-pill audio-toggle ${
+            className={`status-pill tool-pill audio-toggle ${
               audioStatus === 'mic_active'
                 ? 'ok'
                 : audioStatus === 'sim_active'
@@ -1133,48 +1155,30 @@ export function App() {
             title="开启音频识台、防错报警或内置测试音"
           >
             {audioStatus === 'mic_active'
-              ? '🎤监听'
+              ? '🎤监听中'
               : audioStatus === 'sim_active'
-                ? '🔊测试'
+                ? '🔊测试音'
                 : '🔊音频'}
+          </button>
+
+          <button
+            type="button"
+            className={`status-pill tool-pill sim-toggle ${simMode ? 'active' : ''}`}
+            onClick={handleToggleSimMode}
+            title="测试模式：在地图上点击模拟站位与方向打点"
+          >
+            🧪{simMode ? '退出模拟' : '点图模拟'}
           </button>
 
           {!compass && !simMode && (
             <button
               type="button"
-              className="status-pill action"
+              className="status-pill tool-pill action"
               onClick={handleEnableCompassPermission}
             >
-              罗盘
+              🧭启罗盘
             </button>
           )}
-
-          <button
-            type="button"
-            className={`status-pill sim-toggle ${simMode ? 'active' : ''}`}
-            onClick={handleToggleSimMode}
-            title="测试模式：在地图上点击模拟站位与方向打点"
-          >
-            🧪{simMode ? '退' : '模拟'}
-          </button>
-
-          <button
-            type="button"
-            className={`icon-btn ${wakeLocked ? 'active' : ''}`}
-            onClick={handleToggleWakeLock}
-            title={wakeLocked ? '屏幕已常亮' : '开启屏幕常亮'}
-          >
-            ☀
-          </button>
-
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={() => setShowSettingsModal(true)}
-            title="高德Key与传感器设置"
-          >
-            ⚙
-          </button>
         </div>
       </header>
 
