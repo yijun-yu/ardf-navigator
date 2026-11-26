@@ -5,6 +5,7 @@ import type {
   MorseDecoderSnapshot,
   StationId,
 } from '../core/types';
+import { IconClose, IconMic, IconPlay, IconStop } from './Icons';
 
 interface AudioTestModalProps {
   audioStatus: AudioInputStatus;
@@ -53,19 +54,24 @@ export function AudioTestModal({
       <div className="modal-sheet">
         <div className="modal-header">
           <div>
-            <h2>音频识台与内置测试音</h2>
+            <h2>音频识台与测试音</h2>
             <p className="modal-sub">
-              自动解码 11 台摩尔斯电码、拦截非目标台，并驱动「转半圈自动测向」
+              自动解码 11 台摩尔斯电码、拦截非目标台，并驱动转半圈自动测向
             </p>
           </div>
-          <button type="button" className="icon-close" onClick={onClose}>
-            ✕
+          <button
+            type="button"
+            className="icon-close"
+            onClick={onClose}
+            aria-label="关闭"
+          >
+            <IconClose size={16} />
           </button>
         </div>
 
         {/* Section 1: Real hardware mic / USB-C capture */}
         <div className="diag-box">
-          <div className="diag-title">1. 实测模式：外接测向机音频线 / 麦克风</div>
+          <div className="diag-title">实测音频：外接测向机声卡 / 麦克风</div>
           <p className="hint-text">
             已强制关闭浏览器降噪（NS）、回声消除（AEC）和自动增益（AGC），直接采集原始电码波形。
           </p>
@@ -75,7 +81,8 @@ export function AudioTestModal({
               className={isMic ? 'btn-secondary' : 'btn-primary'}
               onClick={isMic ? onStopAudio : onStartMic}
             >
-              {isMic ? '⏹ 停止麦克风监听' : '🎤 开启麦克风 / 声卡监听'}
+              {isMic ? <IconStop size={14} /> : <IconMic size={16} />}
+              <span>{isMic ? '停止麦克风监听' : '开启麦克风 / 声卡监听'}</span>
             </button>
           </div>
           {audioError && <p className="audio-err-text">{audioError}</p>}
@@ -92,7 +99,7 @@ export function AudioTestModal({
                 电平{' '}
                 <strong className={latestFrame.clipped ? 'bad' : 'ok'}>
                   {Math.round(latestFrame.peakLevel * 100)}%
-                  {latestFrame.clipped ? ' (爆音!)' : ''}
+                  {latestFrame.clipped ? '（爆音）' : ''}
                 </strong>
               </span>
               <span>
@@ -108,7 +115,7 @@ export function AudioTestModal({
         {/* Section 2: Zero-hardware built-in 11-station simulator */}
         <div className="diag-box">
           <div className="diag-title">
-            2. 零硬件验收：内置 11 台摩尔斯测试音（点非目标台可测红屏报警）
+            零硬件验证：内置 11 台测试音（选非目标台可测红屏报警）
           </div>
 
           <div className="sim-station-grid">
@@ -125,7 +132,7 @@ export function AudioTestModal({
                   <span className="sim-st-top">
                     <strong>{st.id}</strong>
                     <span className="sim-st-tag">
-                      {isTarget ? '目标' : '非目标'}
+                      {isTarget ? '目标' : '干扰'}
                     </span>
                   </span>
                   <span className="sim-st-morse">
@@ -137,7 +144,7 @@ export function AudioTestModal({
           </div>
 
           <label className="field-label">
-            发报速度：{simWpm} WPM
+            发报速度：<strong>{simWpm} WPM</strong>
             <input
               type="range"
               min={8}
@@ -149,7 +156,7 @@ export function AudioTestModal({
           </label>
 
           <label className="field-label">
-            信噪比（越低底噪越重）：{simSnrDb} dB
+            信噪比（越低底噪越重）：<strong>{simSnrDb} dB</strong>
             <input
               type="range"
               min={8}
@@ -166,16 +173,17 @@ export function AudioTestModal({
               checked={simAudible}
               onChange={(e) => onSimAudibleChange(e.target.checked)}
             />
-            <span>通过扬声器/耳机播放测试滴答声</span>
+            <span>通过扬声器 / 耳机播放测试滴答声</span>
           </label>
 
           <div className="audio-btn-row">
             <button
               type="button"
-              className={isSim ? 'btn-secondary' : 'btn-primary'}
+              className={isSim ? 'btn-secondary' : 'btn-accent'}
               onClick={isSim ? onStopAudio : onStartSimTone}
             >
-              {isSim ? '⏹ 停止测试音' : `▶ 启动 ${simStation} 号台测试音`}
+              {isSim ? <IconStop size={14} /> : <IconPlay size={14} />}
+              <span>{isSim ? '停止测试音' : `启动 ${simStation} 号台测试音`}</span>
             </button>
           </div>
         </div>

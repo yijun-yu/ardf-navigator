@@ -48,7 +48,21 @@ import { AudioInputController, playAlertBeep } from './services/audioInput';
 import { AudioHud } from './components/AudioHud';
 import { AudioTestModal } from './components/AudioTestModal';
 import { AutoSweepOverlay } from './components/AutoSweepOverlay';
-import { MapView } from './components/MapView';
+import {
+  IconCampusFrame,
+  IconCheck,
+  IconCompass,
+  IconLocate,
+  IconMic,
+  IconPinPlus,
+  IconRadio,
+  IconRays,
+  IconRoute,
+  IconSettings,
+  IconSliders,
+  IconSun,
+} from './components/Icons';
+import { MapView, type MapControlHandles } from './components/MapView';
 import { NonTargetAlarm } from './components/NonTargetAlarm';
 import { SettingsModal } from './components/SettingsModal';
 import { StationDock } from './components/StationDock';
@@ -144,6 +158,13 @@ export function App() {
   const [virtualSMeter, setVirtualSMeter] = useState<number>(0);
   const [virtualElapsedSec, setVirtualElapsedSec] = useState<number>(0);
 
+  // Direction A UI chrome state (floating tools popover + collapsible sheet + map FAB handles)
+  const [showToolsMenu, setShowToolsMenu] = useState<boolean>(false);
+  const [dockCollapsed, setDockCollapsed] = useState<boolean>(false);
+  const [mapHandles, setMapHandles] = useState<MapControlHandles | null>(null);
+  const [mapFollowUser, setMapFollowUser] = useState<boolean>(false);
+  const [gpsOutsideCampus, setGpsOutsideCampus] = useState<boolean>(false);
+
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
 
@@ -160,7 +181,6 @@ export function App() {
   const autoSpinTimerRef = useRef<number | null>(null);
   const sweepCompletedRef = useRef<boolean>(false);
 
-  // Live refs for the 50Hz audio frame handler so it never captures stale state
   const liveStateRef = useRef({
     gps,
     compass,
@@ -192,7 +212,6 @@ export function App() {
     campusCenter: CAMPUSES[session.campusId].center,
   };
 
-  // Virtual practice timer (1s tick)
   useEffect(() => {
     if (!virtualScenario) {
       setVirtualElapsedSec(0);
@@ -228,7 +247,6 @@ export function App() {
     };
   }, []);
 
-  // Persist settings & session
   useEffect(() => {
     saveSettings(settings);
   }, [settings]);
@@ -237,7 +255,6 @@ export function App() {
     saveSession(session);
   }, [session]);
 
-  // GPS watcher
   useEffect(() => {
     const stopGps = startGpsWatch({
       onFix: (fix) => {
@@ -249,7 +266,6 @@ export function App() {
     return stopGps;
   }, []);
 
-  // Compass watcher
   useEffect(() => {
     if (!compassEnabled) return;
     const stopCompass = startCompassWatch({
@@ -264,7 +280,6 @@ export function App() {
     return stopCompass;
   }, [compassEnabled, settings.compassOffsetDeg, settings.compassSmoothing]);
 
-  // Screen wake lock
   useEffect(() => {
     const ctrl = new ScreenWakeController(setWakeLocked);
     wakeCtrlRef.current = ctrl;
@@ -273,6 +288,19 @@ export function App() {
   }, []);
 
   const campus = CAMPUSES[session.campusId];
+
+  const handleMapControlsChange = useCallback(
+    (
+      handles: MapControlHandles | null,
+      follow: boolean,
+      outside: boolean,
+    ) => {
+      setMapHandles(handles);
+      setMapFollowUser(follow);
+      setGpsOutsideCampus(outside);
+    },
+    [],
+  );
 
   const appendObservation = useCallback(
     (
@@ -328,7 +356,6 @@ export function App() {
         });
       }
 
-      // Pick best available observer location: real GPS -> virtualPos -> simOrigin -> lastSimOrigin -> campus center
       const origin =
         gps?.gcj ?? virtualPos ?? simOrigin ?? lastSimOrigin ?? campus.center;
       const accuracy = gps ? gps.accuracy : 5;
@@ -341,7 +368,7 @@ export function App() {
         bearingDeg,
         'bidirectional',
         accuracy,
-        `🔄 自动测向完成：${st.label} ${Math.round(bearingDeg)}° / ${Math.round((bearingDeg + 180) % 360)}°`,
+        `自动测向完成：${st.label} ${Math.round(bearingDeg)}° / ${Math.round((bearingDeg + 180) % 360)}°`,
       );
       if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
         navigator.vibrate([45, 60, 80]);
@@ -368,7 +395,6 @@ export function App() {
   const confirmSweepRef = useRef(handleConfirmAutoSweep);
   confirmSweepRef.current = handleConfirmAutoSweep;
 
-  // Initialize unified AudioInputController once
   useEffect(() => {
     const ctrl = new AudioInputController({
       onFrame: (frame) => {
@@ -385,7 +411,6 @@ export function App() {
             : live.simSweepHeading;
           nextSweep = sweeperRef.current.addSample(frame, heading);
 
-          // Auto-finish as soon as ~160°+ covered with high dipole fit quality
           if (
             nextSweep.ready &&
             nextSweep.bearingDeg !== null &&
@@ -399,7 +424,6 @@ export function App() {
           }
         }
 
-        // Throttle React UI state updates to ~15 Hz while DSP runs at full 50 Hz
         const now = performance.now();
         if (now - lastUiPaintRef.current >= 65) {
           lastUiPaintRef.current = now;
@@ -423,7 +447,6 @@ export function App() {
     };
   }, []);
 
-  // React to Morse decoder lock events: non-target alarm & target auto-select
   useEffect(() => {
     const locked = morse.lockedStation;
     if (!locked) {
@@ -445,7 +468,6 @@ export function App() {
       return;
     }
 
-    // Valid target locked: clear any alarm & auto-select once per lock transition
     setAlarmStation(null);
     if (lastAutoSelectedRef.current !== locked) {
       lastAutoSelectedRef.current = locked;
@@ -454,9 +476,9 @@ export function App() {
       );
       const st = getStation(locked);
       if (session.punchedStations.includes(locked)) {
-        showToast(`已识别 ${st.label}，但该台已打过卡，请换下一个`);
+        showToast(`已识别 ${st.label}，该台已打过卡`);
       } else {
-        showToast(`✓ 自动锁定目标台：${st.label} (${st.callsign})`);
+        showToast(`锁定目标台：${st.label} (${st.callsign})`);
       }
     }
   }, [
@@ -467,7 +489,6 @@ export function App() {
     showToast,
   ]);
 
-  // Keep live sim synthesizer config in sync while running
   useEffect(() => {
     if (audioStatus === 'sim_active' && audioCtrlRef.current) {
       audioCtrlRef.current.updateSimConfig({
@@ -498,7 +519,7 @@ export function App() {
     const ok = await audioCtrlRef.current.startMic();
     if (ok) {
       setAudioStatus('mic_active');
-      showToast('🎤 麦克风监听已开启（已关闭降噪）');
+      showToast('麦克风监听已开启（已关闭降噪）');
     }
   };
 
@@ -540,13 +561,13 @@ export function App() {
     }
   };
 
-  // Start / restart Stage 5 Virtual Campus Fox-Hunt Practice Mode
   const launchVirtualField = useCallback(
     (scope: VirtualFieldScope, targetCampus = campus) => {
       stopAutoSpinDemo();
       setSimMode(false);
       setSimOrigin(null);
       setSweepActive(false);
+      setShowToolsMenu(false);
       decoderRef.current.reset();
       setMorse(INITIAL_MORSE);
       setAlarmStation(null);
@@ -566,10 +587,8 @@ export function App() {
       setVirtualScenario(scenario);
       setVirtualPos(startAnchor);
       setVirtualElapsedSec(0);
-      // Pre-tune near the first target's band neighborhood (offset slightly so runner still tunes!)
       setVirtualFreqMHz(3.55);
 
-      // Fresh practice run: clear prior bearings & punches
       setSession((prev) => ({
         ...prev,
         observations: [],
@@ -583,17 +602,12 @@ export function App() {
         const sc = live.virtualScenario ?? scenario;
         const obsPos = live.gps?.gcj ?? live.virtualPos ?? live.campusCenter;
 
-        // Compute effective heading:
-        // - Real phone compass when present;
-        // - Simulated heading during desktop auto-sweep;
-        // - Optimal broadside angle when passively tuning on a compass-less laptop
         let headingDeg: number;
         if (live.compass) {
           headingDeg = live.compass.heading;
         } else if (live.sweepActive) {
           headingDeg = live.simSweepHeading;
         } else {
-          // Keep tuned station clearly audible on desktop while sliding the dial
           const probe = evaluateVirtualFieldSignal(
             sc,
             live.virtualFreqMHz,
@@ -634,7 +648,7 @@ export function App() {
 
       setAudioStatus('sim_active');
       showToast(
-        `🏃 实战演练开始！已在${targetCampus.shortName}隐藏 ${session.targetStations.length} 个目标台 + 3 个干扰台`,
+        `演练开始：已在${targetCampus.shortName}隐藏 ${session.targetStations.length} 目标 + 3 干扰台`,
       );
     },
     [campus, gps, session.targetStations, showToast, stopAutoSpinDemo],
@@ -643,7 +657,7 @@ export function App() {
   const handleExitVirtualField = () => {
     handleStopAudio();
     setVirtualPos(null);
-    showToast('已退出虚拟实战演练');
+    showToast('已退出校园实战演练');
   };
 
   const handleVirtualFreqChange = (freq: number) => {
@@ -657,17 +671,14 @@ export function App() {
     sweeperRef.current.reset();
     sweepCompletedRef.current = false;
     setSweepSnapshot(INITIAL_SWEEP);
+    setShowToolsMenu(false);
 
-    // If audio is not running yet:
-    // - On mobile with compass, try starting mic; if unavailable/denied, fall back to built-in sim tone so user can still test!
-    // - On desktop without compass, auto-start built-in sim tone for the active station!
     if (audioStatus === 'idle' || audioStatus === 'error') {
       if (compass) {
         const ok = await audioCtrlRef.current?.startMic();
         if (ok) {
           setAudioStatus('mic_active');
         } else {
-          // Offer instant fallback to simulated tone test
           setSimStation(session.activeStation);
           audioCtrlRef.current?.startSimTone({
             stationId: session.activeStation,
@@ -679,7 +690,7 @@ export function App() {
             headingDeg: simSweepHeading,
           });
           setAudioStatus('sim_active');
-          showToast('未连麦克风，已自动切换为无硬件模拟测向演练');
+          showToast('未连麦克风，已切换为无硬件模拟测向');
         }
       } else {
         setSimStation(session.activeStation);
@@ -722,7 +733,6 @@ export function App() {
     sweepCompletedRef.current = false;
     setSweepSnapshot(INITIAL_SWEEP);
 
-    // Ensure sim tone is active for standalone test mode (do NOT overwrite virtual field stream!)
     if (!virtualScenario && audioStatus !== 'sim_active') {
       setSimStation(session.activeStation);
       audioCtrlRef.current?.startSimTone({
@@ -755,7 +765,6 @@ export function App() {
     }, 30);
   };
 
-  // Solve triangulation estimates for all target stations
   const estimates = useMemo(
     () =>
       triangulateAllStations(
@@ -793,7 +802,7 @@ export function App() {
         navigator.vibrate([220, 80, 220, 80, 350]);
       }
       playAlertBeep('alarm');
-      showToast(`⛔ 错打非目标台 ${st.label}！成绩罚时 +1 小时！`);
+      showToast(`错打非目标台 ${st.label}，罚时 +1 小时`);
       return;
     }
 
@@ -804,17 +813,16 @@ export function App() {
       if (nextPunchedCount >= session.targetStations.length) {
         setShowVirtualTruth(true);
         showToast(
-          `🏆 全部 ${session.targetStations.length} 个目标找齐！已展开真位置供复盘`,
+          `全部 ${session.targetStations.length} 台找齐，已显示真位置供复盘`,
         );
       } else {
         showToast(
-          `✓ 演练打卡成功：${st.label}（${nextPunchedCount}/${session.targetStations.length}）`,
+          `打卡成功：${st.label}（${nextPunchedCount}/${session.targetStations.length}）`,
         );
       }
     }
   };
 
-  // Stage 4: Exact TSP route planning + progressive Amap campus walking road network
   const effectiveRouteOrigin = referencePos ?? campus.center;
   const routableTargets = useMemo(
     () =>
@@ -826,7 +834,6 @@ export function App() {
     [session.targetStations, session.punchedStations, estimates],
   );
 
-  // Debounce runner origin movement by 18m before triggering fresh Amap walking queries
   useEffect(() => {
     setRouteQueryOrigin((prev) => {
       if (!prev) return effectiveRouteOrigin;
@@ -839,7 +846,6 @@ export function App() {
 
   const activeRouteOrigin = routeQueryOrigin ?? effectiveRouteOrigin;
 
-  // Stable key for routable station coordinates (quantized ~15m so micro-jitter won't re-query)
   const routableKey = useMemo(
     () =>
       routableTargets
@@ -853,7 +859,6 @@ export function App() {
     [routableTargets],
   );
 
-  // Progressively warm real Amap walking distances & polylines when Amap is loaded
   useEffect(() => {
     if (!amapInstance || routableTargets.length === 0) {
       setRouteRefining(false);
@@ -917,13 +922,13 @@ export function App() {
     if (!simMode) {
       showToast(
         !gps && !compass
-          ? '未检测到 GPS/罗盘，可点顶部 🧪 模拟打点或点「转半圈测向」演练'
+          ? '未检测到 GPS / 罗盘，可在右上角工具箱开启模拟打点或演练'
           : !gps
-            ? '等待 GPS 定位中…（也可点顶部 🧪 点图模拟）'
-            : '等待罗盘中…（点顶部启罗盘或 🧪 点图模拟）',
+            ? '正在等待 GPS 定位…'
+            : '正在等待罗盘数据（可在右上角工具箱启用罗盘）',
       );
     } else {
-      showToast('模拟模式已开启：直接在地图上点站位 → 点方向即可打点');
+      showToast('模拟模式已开启：直接点击地图放站位，再点方向落线');
     }
   };
 
@@ -990,6 +995,7 @@ export function App() {
     if (granted) {
       setCompassEnabled(true);
       setCompassError(null);
+      showToast('已开启电子罗盘');
     } else {
       setCompassError('未授予方向传感器权限');
     }
@@ -1007,13 +1013,14 @@ export function App() {
   };
 
   const handleToggleSimMode = () => {
+    setShowToolsMenu(false);
     setSimMode((prev) => {
       const next = !prev;
       if (!next) {
         setSimOrigin(null);
         setSimPreviewDeg(null);
       } else {
-        showToast('模拟打点已开启：点地图放站位，再点方向（也可配自动测向）');
+        showToast('点图模拟已开启：先点站位，再点方向');
       }
       return next;
     });
@@ -1040,7 +1047,6 @@ export function App() {
 
       let nextActive = prev.activeStation;
       if (!exists) {
-        // Prefer the next unpunched station in the optimal TSP running order
         const nextInRoute = routePlan?.orderedStations.find(
           (t) => !nextPunched.includes(t),
         );
@@ -1080,142 +1086,14 @@ export function App() {
       ? compass.heading
       : simSweepHeading;
 
+  const activeSpec = getStation(session.activeStation);
+  const hasActiveTool = Boolean(
+    virtualScenario || simMode || audioStatus !== 'idle',
+  );
+
   return (
     <div className="app-shell">
-      {/* Top HUD bar (2 compact rows on portrait phones, single row on desktop) */}
-      <header className="top-bar">
-        <div className="top-bar-primary">
-          <div className="campus-tabs" role="tablist" aria-label="切换浙大校区">
-            {CAMPUS_LIST.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                role="tab"
-                aria-selected={c.id === session.campusId}
-                className={`campus-tab ${c.id === session.campusId ? 'active' : ''}`}
-                onClick={() => handleCampusChange(c.id)}
-              >
-                {c.shortName}
-              </button>
-            ))}
-          </div>
-
-          <div className="top-bar-sys">
-            <span
-              className={`status-pill ${gps ? 'ok' : gpsError ? 'bad' : 'wait'}`}
-              title={gpsError ?? 'GPS 定位状态'}
-            >
-              {gps ? `±${gps.accuracy}m` : 'GPS'}
-            </span>
-
-            <button
-              type="button"
-              className={`icon-btn ${wakeLocked ? 'active' : ''}`}
-              onClick={handleToggleWakeLock}
-              title={wakeLocked ? '屏幕已常亮' : '开启屏幕常亮'}
-            >
-              ☀
-            </button>
-
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={() => setShowSettingsModal(true)}
-              title="高德Key与传感器设置"
-            >
-              ⚙
-            </button>
-          </div>
-        </div>
-
-        <div className="top-bar-tools">
-          <button
-            type="button"
-            className={`status-pill tool-pill vf-toggle ${virtualScenario ? 'active' : ''}`}
-            onClick={() =>
-              virtualScenario
-                ? handleExitVirtualField()
-                : launchVirtualField(virtualScope)
-            }
-            title="开启浙大校园虚拟电台全流程实战演练（无需硬件）"
-          >
-            🏃{virtualScenario ? '演练中' : '演练'}
-          </button>
-
-          <button
-            type="button"
-            className={`status-pill tool-pill audio-toggle ${
-              audioStatus === 'mic_active'
-                ? 'ok'
-                : audioStatus === 'sim_active'
-                  ? 'sim'
-                  : ''
-            }`}
-            onClick={() => setShowAudioModal(true)}
-            title="开启音频识台、防错报警或内置测试音"
-          >
-            {audioStatus === 'mic_active'
-              ? '🎤监听中'
-              : audioStatus === 'sim_active'
-                ? '🔊测试音'
-                : '🔊音频'}
-          </button>
-
-          <button
-            type="button"
-            className={`status-pill tool-pill sim-toggle ${simMode ? 'active' : ''}`}
-            onClick={handleToggleSimMode}
-            title="测试模式：在地图上点击模拟站位与方向打点"
-          >
-            🧪{simMode ? '退出模拟' : '点图模拟'}
-          </button>
-
-          {!compass && !simMode && (
-            <button
-              type="button"
-              className="status-pill tool-pill action"
-              onClick={handleEnableCompassPermission}
-            >
-              🧭启罗盘
-            </button>
-          )}
-        </div>
-      </header>
-
-      {/* Live audio & Morse recognition status strip */}
-      <AudioHud
-        audioStatus={audioStatus}
-        latestFrame={latestFrame}
-        morse={morse}
-        targets={session.targetStations}
-        punched={session.punchedStations}
-        onOpenAudioPanel={() => setShowAudioModal(true)}
-        onStopAudio={handleStopAudio}
-      />
-
-      {/* Stage 5 Virtual Campus Fox-Hunt Practice Bar */}
-      {virtualScenario && (
-        <VirtualFieldBar
-          scenario={virtualScenario}
-          elapsedSec={virtualElapsedSec}
-          tunedFreqMHz={virtualFreqMHz}
-          sMeter={virtualSMeter}
-          audible={virtualAudible}
-          showTruth={showVirtualTruth}
-          hasRealGps={Boolean(gps)}
-          nearbyTx={nearbyVirtualTx}
-          punched={session.punchedStations}
-          onFreqChange={handleVirtualFreqChange}
-          onScopeChange={(nextScope) => launchVirtualField(nextScope)}
-          onRegenerate={() => launchVirtualField(virtualScope)}
-          onToggleAudible={() => setVirtualAudible((v) => !v)}
-          onToggleShowTruth={() => setShowVirtualTruth((v) => !v)}
-          onPunchNearby={handlePunchNearbyVirtual}
-          onExit={handleExitVirtualField}
-        />
-      )}
-
-      {/* Main map canvas */}
+      {/* Full-bleed edge-to-edge map canvas (World-as-Interface) */}
       <main className="map-main">
         <MapView
           campus={campus}
@@ -1245,76 +1123,381 @@ export function App() {
           )}
           onMoveVirtualRunner={(pos) => {
             setVirtualPos(pos);
-            showToast('已移动到新站位，可点「🔄 转半圈测向」继续定位');
+            showToast('已更新虚拟站位，可继续转半圈测向');
           }}
           onSelectStation={(id) =>
             setSession((prev) => ({ ...prev, activeStation: id }))
           }
-          onToggleShowRoute={() => setShowRoute((v) => !v)}
-          onToggleShowAllRays={() => setShowAllRays((v) => !v)}
           onSimOriginChange={setSimOrigin}
           onSimPreviewDegChange={setSimPreviewDeg}
           onRecordSimulatedBearing={handleRecordSimulatedBearing}
           onAmapReady={setAmapInstance}
+          onControlsChange={handleMapControlsChange}
           onOpenSettings={() => setShowSettingsModal(true)}
         />
+      </main>
 
-        {sweepActive && (
-          <AutoSweepOverlay
-            activeStation={session.activeStation}
-            audioStatus={audioStatus}
-            snapshot={sweepSnapshot}
-            currentHeadingDeg={activeSweepHeading}
-            latestFrame={latestFrame}
-            hasRealCompass={Boolean(compass)}
-            virtualFieldActive={Boolean(virtualScenario)}
-            simNullDeg={simSweepNullDeg}
-            simAutoSpinning={simAutoSpinning}
-            onSimNullDegChange={(deg) => {
-              setSimSweepNullDeg(deg);
-              handleRestartSweep();
-            }}
-            onManualSimHeading={(deg) => setSimSweepHeading(deg)}
-            onStartAutoSpinDemo={handleStartAutoSpinDemo}
-            onConfirmBearing={handleConfirmAutoSweep}
-            onRestart={handleRestartSweep}
-            onCancel={handleCancelSweep}
+      {/* Floating minimalist daylight top HUD */}
+      <header className="top-hud-stack">
+        <div className="top-hud-row">
+          {/* Left floating campus + GPS pill */}
+          <div className="top-capsule-left">
+            <div className="campus-tabs" role="tablist" aria-label="切换浙大校区">
+              {CAMPUS_LIST.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={c.id === session.campusId}
+                  className={`campus-tab ${c.id === session.campusId ? 'active' : ''}`}
+                  onClick={() => handleCampusChange(c.id)}
+                >
+                  {c.shortName}
+                </button>
+              ))}
+            </div>
+
+            <span className="capsule-divider" />
+
+            <span
+              className={`gps-indicator ${gps ? 'ok' : gpsError ? 'bad' : 'wait'}`}
+              title={gpsError ?? 'GPS 定位状态'}
+            >
+              <span className="gps-dot" />
+              <span className="gps-val">{gps ? `±${gps.accuracy}m` : 'GPS'}</span>
+            </span>
+          </div>
+
+          {/* Right floating icon controls (Tools Drawer + Settings) */}
+          <div className="top-capsule-right">
+            <button
+              type="button"
+              className={`hud-icon-btn ${showToolsMenu || hasActiveTool ? 'active' : ''}`}
+              onClick={() => setShowToolsMenu((v) => !v)}
+              title="工具箱（实战演练、音频监听、点图模拟、常亮）"
+              aria-label="打开工具菜单"
+            >
+              <IconSliders size={18} />
+              {hasActiveTool && <span className="hud-active-dot" />}
+            </button>
+
+            <button
+              type="button"
+              className="hud-icon-btn"
+              onClick={() => {
+                setShowToolsMenu(false);
+                setShowSettingsModal(true);
+              }}
+              title="高德地图与传感器设置"
+              aria-label="打开设置"
+            >
+              <IconSettings size={18} />
+            </button>
+          </div>
+        </div>
+
+        {/* Clean floating Tools Popover */}
+        {showToolsMenu && (
+          <>
+            <div
+              className="tools-backdrop"
+              onClick={() => setShowToolsMenu(false)}
+            />
+            <div className="tools-popover" role="menu" aria-label="快捷工具">
+              <button
+                type="button"
+                className={`tool-row ${virtualScenario ? 'active' : ''}`}
+                onClick={() =>
+                  virtualScenario
+                    ? handleExitVirtualField()
+                    : launchVirtualField(virtualScope)
+                }
+              >
+                <IconRadio size={17} />
+                <div className="tool-row-text">
+                  <strong>{virtualScenario ? '退出校园演练' : '校园实战演练'}</strong>
+                  <span>无硬件下楼实测 6 台搜寻</span>
+                </div>
+                <span className={`tool-state ${virtualScenario ? 'on' : ''}`}>
+                  {virtualScenario ? '进行中' : '开启'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className={`tool-row ${audioStatus !== 'idle' ? 'active' : ''}`}
+                onClick={() => {
+                  setShowToolsMenu(false);
+                  setShowAudioModal(true);
+                }}
+              >
+                <IconMic size={17} />
+                <div className="tool-row-text">
+                  <strong>音频识台与测试音</strong>
+                  <span>外接声卡监听 / 11 台模拟电码</span>
+                </div>
+                <span className={`tool-state ${audioStatus !== 'idle' ? 'on' : ''}`}>
+                  {audioStatus === 'mic_active'
+                    ? '监听中'
+                    : audioStatus === 'sim_active'
+                      ? '测试中'
+                      : '打开'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className={`tool-row ${simMode ? 'active' : ''}`}
+                onClick={handleToggleSimMode}
+              >
+                <IconPinPlus size={17} />
+                <div className="tool-row-text">
+                  <strong>点图模拟打点</strong>
+                  <span>点击地图模拟站位与方向线</span>
+                </div>
+                <span className={`tool-state ${simMode ? 'on' : ''}`}>
+                  {simMode ? '已开启' : '关闭'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                className={`tool-row ${wakeLocked ? 'active' : ''}`}
+                onClick={() => void handleToggleWakeLock()}
+              >
+                <IconSun size={17} />
+                <div className="tool-row-text">
+                  <strong>跑步屏幕常亮</strong>
+                  <span>防止跑动中自动锁屏断流</span>
+                </div>
+                <span className={`tool-state ${wakeLocked ? 'on' : ''}`}>
+                  {wakeLocked ? '已常亮' : '关闭'}
+                </span>
+              </button>
+
+              {!compass && (
+                <button
+                  type="button"
+                  className="tool-row"
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    void handleEnableCompassPermission();
+                  }}
+                >
+                  <IconCompass size={17} />
+                  <div className="tool-row-text">
+                    <strong>请求电子罗盘权限</strong>
+                    <span>授权读取手机实时磁北朝向</span>
+                  </div>
+                  <span className="tool-state">启用</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                className="tool-row"
+                onClick={() => {
+                  setShowToolsMenu(false);
+                  setShowTargetsModal(true);
+                }}
+              >
+                <IconCheck size={17} />
+                <div className="tool-row-text">
+                  <strong>设定本场 6 个目标台</strong>
+                  <span>当前：{session.targetStations.join(' / ')}</span>
+                </div>
+                <span className="tool-state">修改</span>
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Contextual floating strips (only visible when active) */}
+        <AudioHud
+          audioStatus={audioStatus}
+          latestFrame={latestFrame}
+          morse={morse}
+          targets={session.targetStations}
+          punched={session.punchedStations}
+          onOpenAudioPanel={() => setShowAudioModal(true)}
+          onStopAudio={handleStopAudio}
+        />
+
+        {virtualScenario && (
+          <VirtualFieldBar
+            scenario={virtualScenario}
+            elapsedSec={virtualElapsedSec}
+            tunedFreqMHz={virtualFreqMHz}
+            sMeter={virtualSMeter}
+            audible={virtualAudible}
+            showTruth={showVirtualTruth}
+            hasRealGps={Boolean(gps)}
+            nearbyTx={nearbyVirtualTx}
+            punched={session.punchedStations}
+            onFreqChange={handleVirtualFreqChange}
+            onScopeChange={(nextScope) => launchVirtualField(nextScope)}
+            onRegenerate={() => launchVirtualField(virtualScope)}
+            onToggleAudible={() => setVirtualAudible((v) => !v)}
+            onToggleShowTruth={() => setShowVirtualTruth((v) => !v)}
+            onPunchNearby={handlePunchNearbyVirtual}
+            onExit={handleExitVirtualField}
           />
         )}
 
-        {toast && <div className="map-toast">{toast}</div>}
-      </main>
+        {simMode && (
+          <div className="sim-guide-bar">
+            <div className="sim-guide-text">
+              <strong>点图模拟 · {activeSpec.label}</strong>
+              <span>
+                {!simOrigin
+                  ? '第 1 步：点地图放置站位'
+                  : `第 2 步：点目标方向打出${
+                      session.bearingMode === 'bidirectional' ? '双向' : '单向'
+                    }线${
+                      simPreviewDeg !== null
+                        ? ` · ${Math.round(simPreviewDeg)}°`
+                        : ''
+                    }`}
+              </span>
+            </div>
+            <div className="sim-guide-actions">
+              {simOrigin && (
+                <button
+                  type="button"
+                  className="sim-bar-btn"
+                  onClick={() => setSimOrigin(null)}
+                >
+                  重选
+                </button>
+              )}
+              <button
+                type="button"
+                className="sim-bar-btn"
+                onClick={handleToggleSimMode}
+              >
+                退出
+              </button>
+            </div>
+          </div>
+        )}
 
-      {/* Bottom runner single-hand control dock */}
-      <StationDock
-        targets={session.targetStations}
-        punched={session.punchedStations}
-        activeStation={session.activeStation}
-        bearingMode={session.bearingMode}
-        compass={compass}
-        canRecordLive={Boolean(gps && compass)}
-        simMode={simMode}
-        simPreviewDeg={simPreviewDeg}
-        sweepActive={sweepActive}
-        estimates={estimates}
-        routePlan={routePlan}
-        activeDistanceM={activeDistanceM}
-        totalObservations={session.observations.length}
-        onSelectStation={(id) =>
-          setSession((prev) => ({ ...prev, activeStation: id }))
-        }
-        onStartAutoSweep={() => void handleStartAutoSweep()}
-        onRecordBearing={handleRecordLiveBearing}
-        onUndoStationBearing={handleUndoStationBearing}
-        onClearStationBearings={handleClearStationBearings}
-        onClearAllBearings={handleClearAllBearings}
-        onTogglePunch={handleTogglePunch}
-        onToggleBearingMode={handleToggleBearingMode}
-        onOpenTargetSetup={() => setShowTargetsModal(true)}
-        onResetPunches={handleResetPunches}
-      />
+        {gpsOutsideCampus && !simMode && !virtualScenario && (
+          <div className="campus-warn-pill">
+            当前定位不在{campus.shortName}范围内（可在左上切换校区）
+          </div>
+        )}
+      </header>
 
-      {/* Full-screen red flash alarm when non-target station is locked */}
+      {/* Bottom floating stack: Map FABs + Toast + Collapsible Daylight Sheet */}
+      <div className="bottom-hud-stack">
+        <div className="map-overlay-row">
+          <div className="toast-slot">
+            {toast && <div className="map-toast">{toast}</div>}
+          </div>
+
+          <div className="map-fab-stack">
+            <button
+              type="button"
+              className={`map-fab ${showRoute ? 'active' : ''}`}
+              onClick={() => setShowRoute((v) => !v)}
+              title={showRoute ? '隐藏推荐路线' : '显示最优跑步路线'}
+              aria-label="切换路线显示"
+            >
+              <IconRoute size={18} />
+            </button>
+
+            <button
+              type="button"
+              className={`map-fab ${showAllRays ? 'active' : ''}`}
+              onClick={() => setShowAllRays((v) => !v)}
+              title={showAllRays ? '仅看当前台射线' : '显示全部目标台射线'}
+              aria-label="切换全部或单台射线"
+            >
+              <IconRays size={18} />
+            </button>
+
+            {mapHandles && (
+              <>
+                <button
+                  type="button"
+                  className={`map-fab ${mapFollowUser ? 'active' : ''}`}
+                  onClick={mapHandles.recenterMe}
+                  disabled={!gps}
+                  title="定位到我"
+                  aria-label="定位到当前位置"
+                >
+                  <IconLocate size={18} />
+                </button>
+                <button
+                  type="button"
+                  className="map-fab"
+                  onClick={mapHandles.recenterCampus}
+                  title="回到校区全览"
+                  aria-label="回到校区全览"
+                >
+                  <IconCampusFrame size={18} />
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        <StationDock
+          targets={session.targetStations}
+          punched={session.punchedStations}
+          activeStation={session.activeStation}
+          bearingMode={session.bearingMode}
+          compass={compass}
+          canRecordLive={Boolean(gps && compass)}
+          simMode={simMode}
+          simPreviewDeg={simPreviewDeg}
+          sweepActive={sweepActive}
+          collapsed={dockCollapsed}
+          estimates={estimates}
+          routePlan={routePlan}
+          activeDistanceM={activeDistanceM}
+          totalObservations={session.observations.length}
+          onToggleCollapse={() => setDockCollapsed((v) => !v)}
+          onSelectStation={(id) =>
+            setSession((prev) => ({ ...prev, activeStation: id }))
+          }
+          onStartAutoSweep={() => void handleStartAutoSweep()}
+          onRecordBearing={handleRecordLiveBearing}
+          onUndoStationBearing={handleUndoStationBearing}
+          onClearStationBearings={handleClearStationBearings}
+          onClearAllBearings={handleClearAllBearings}
+          onTogglePunch={handleTogglePunch}
+          onToggleBearingMode={handleToggleBearingMode}
+          onOpenTargetSetup={() => setShowTargetsModal(true)}
+          onResetPunches={handleResetPunches}
+        />
+      </div>
+
+      {/* Auto Half-Turn Bearing Sweep Overlay */}
+      {sweepActive && (
+        <AutoSweepOverlay
+          activeStation={session.activeStation}
+          audioStatus={audioStatus}
+          snapshot={sweepSnapshot}
+          currentHeadingDeg={activeSweepHeading}
+          latestFrame={latestFrame}
+          hasRealCompass={Boolean(compass)}
+          virtualFieldActive={Boolean(virtualScenario)}
+          simNullDeg={simSweepNullDeg}
+          simAutoSpinning={simAutoSpinning}
+          onSimNullDegChange={(deg) => {
+            setSimSweepNullDeg(deg);
+            handleRestartSweep();
+          }}
+          onManualSimHeading={(deg) => setSimSweepHeading(deg)}
+          onStartAutoSpinDemo={handleStartAutoSpinDemo}
+          onConfirmBearing={handleConfirmAutoSweep}
+          onRestart={handleRestartSweep}
+          onCancel={handleCancelSweep}
+        />
+      )}
+
+      {/* Full-screen high-contrast crimson alarm when non-target station is locked */}
       {alarmStation && (
         <NonTargetAlarm
           stationId={alarmStation}

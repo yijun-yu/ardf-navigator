@@ -5,6 +5,7 @@ import type {
   MorseDecoderSnapshot,
   StationId,
 } from '../core/types';
+import { IconClose, IconMic, IconVolume } from './Icons';
 
 interface AudioHudProps {
   audioStatus: AudioInputStatus;
@@ -42,22 +43,22 @@ export function AudioHud({
     ? punched.includes(morse.lockedStation)
     : false;
 
-  let lockText = '监听电码中…';
+  let lockText = '正在监听电码…';
   let lockClass = 'muted';
   if (lockedSpec) {
     if (!isTarget) {
-      lockText = `⛔ 非目标：${lockedSpec.label} (${lockedSpec.callsign})`;
+      lockText = `非目标台：${lockedSpec.label} (${lockedSpec.callsign})`;
       lockClass = 'danger';
     } else if (isPunched) {
-      lockText = `✓ ${lockedSpec.label} 已打过卡，换下台`;
+      lockText = `${lockedSpec.label} 已打过卡，请换台`;
       lockClass = 'warn';
     } else {
-      lockText = `✓ 目标台 ${lockedSpec.label} · ${lockedSpec.callsign} (${Math.round(morse.confidence * 100)}%)`;
+      lockText = `锁定 ${lockedSpec.label} · ${lockedSpec.callsign} (${Math.round(morse.confidence * 100)}%)`;
       lockClass = 'ok';
     }
   } else if (morse.candidateStation) {
     const cand = getStation(morse.candidateStation);
-    lockText = `确认中：${cand.label}…`;
+    lockText = `校验 ${cand.label}…`;
     lockClass = 'identifying';
   }
 
@@ -71,7 +72,17 @@ export function AudioHud({
           onClick={onOpenAudioPanel}
           title="打开音频设置与测试台"
         >
-          {audioStatus === 'mic_active' ? '🎤 实测' : '🔊 模拟音'}
+          {audioStatus === 'mic_active' ? (
+            <>
+              <IconMic size={13} />
+              <span>实测</span>
+            </>
+          ) : (
+            <>
+              <IconVolume size={13} />
+              <span>模拟音</span>
+            </>
+          )}
         </button>
 
         <span className={`audio-lock-text ${lockClass}`}>{lockText}</span>
@@ -101,8 +112,9 @@ export function AudioHud({
           className="audio-stop-btn"
           onClick={onStopAudio}
           title="关闭音频监听"
+          aria-label="关闭音频监听"
         >
-          ✕
+          <IconClose size={14} />
         </button>
       </div>
     </div>

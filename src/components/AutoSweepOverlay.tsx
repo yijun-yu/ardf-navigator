@@ -6,6 +6,13 @@ import type {
   AutoBearingSnapshot,
   StationId,
 } from '../core/types';
+import {
+  IconCheck,
+  IconClose,
+  IconPlay,
+  IconRadarSweep,
+  IconRefresh,
+} from './Icons';
 
 interface AutoSweepOverlayProps {
   activeStation: StationId;
@@ -49,7 +56,6 @@ export function AutoSweepOverlay({
   const clipped = Boolean(latestFrame?.clipped);
   const showSimControls = !hasRealCompass || audioStatus === 'sim_active';
 
-  // Build polar 18-bin wedges (mirrored across 180° for intuitive 360° dipole display)
   const cx = 110;
   const cy = 110;
   const maxR = 84;
@@ -60,7 +66,7 @@ export function AutoSweepOverlay({
     const val = snapshot.binPowers[i];
     const startDeg = i * 10;
     const endDeg = startDeg + 9.2;
-    const r = val === null ? minR + 8 : minR + Math.min(1, val) * (maxR - minR);
+    const r = val === null ? minR + 7 : minR + Math.min(1, val) * (maxR - minR);
 
     for (const offset of [0, 180]) {
       const a1 = ((startDeg + offset) * Math.PI) / 180;
@@ -74,13 +80,12 @@ export function AutoSweepOverlay({
       wedges.push({
         key: `${i}-${offset}`,
         d,
-        fill: val === null ? '#334155' : val < 0.28 ? '#4ade80' : '#38bdf8',
-        opacity: val === null ? 0.25 : 0.72,
+        fill: val === null ? '#E2E8F0' : val < 0.28 ? '#15803D' : '#1E293B',
+        opacity: val === null ? 0.55 : val < 0.28 ? 0.72 : 0.28,
       });
     }
   }
 
-  // Fitted bidirectional null axis line
   let nullLine: { x1: number; y1: number; x2: number; y2: number } | null = null;
   if (snapshot.bearingDeg !== null) {
     const rad = (snapshot.bearingDeg * Math.PI) / 180;
@@ -92,13 +97,12 @@ export function AutoSweepOverlay({
     };
   }
 
-  // Live heading needle
   let needleEnd: { x: number; y: number } | null = null;
   if (currentHeadingDeg !== null) {
     const rad = (currentHeadingDeg * Math.PI) / 180;
     needleEnd = {
-      x: cx + Math.sin(rad) * 92,
-      y: cy - Math.cos(rad) * 92,
+      x: cx + Math.sin(rad) * 90,
+      y: cy - Math.cos(rad) * 90,
     };
   }
 
@@ -108,15 +112,20 @@ export function AutoSweepOverlay({
         <div className="sweep-header">
           <div>
             <div className="sweep-title">
-              🔄 转半圈自动测向 ·{' '}
-              <span style={{ color: st.color }}>{st.label}</span>
+              <IconRadarSweep size={17} />
+              <span>转半圈自动测向 · {st.label}</span>
             </div>
             <div className="sweep-sub">
-              左手测向机、右手手机保持 30cm，身体慢慢转半圈（约 3 秒）
+              测向机与手机保持 30cm 间距，身体匀速转半圈（约 3 秒）
             </div>
           </div>
-          <button type="button" className="icon-close" onClick={onCancel}>
-            ✕
+          <button
+            type="button"
+            className="icon-close"
+            onClick={onCancel}
+            aria-label="关闭"
+          >
+            <IconClose size={16} />
           </button>
         </div>
 
@@ -126,28 +135,28 @@ export function AutoSweepOverlay({
               cx={cx}
               cy={cy}
               r={maxR}
-              fill="rgba(15,23,42,0.75)"
-              stroke="rgba(148,163,184,0.25)"
-              strokeWidth="1"
+              fill="#F6F5F0"
+              stroke="#CBD5E1"
+              strokeWidth="1.2"
             />
             <circle
               cx={cx}
               cy={cy}
               r={(maxR + minR) * 0.5}
               fill="none"
-              stroke="rgba(148,163,184,0.16)"
+              stroke="#CBD5E1"
               strokeDasharray="3 3"
             />
-            <text x={cx} y="16" textAnchor="middle" fill="#38bdf8" fontSize="11" fontWeight="700">
+            <text x={cx} y="16" textAnchor="middle" fill="#E84C22" fontSize="11" fontWeight="800">
               N
             </text>
-            <text x="208" y={cy + 4} textAnchor="middle" fill="#94a3b8" fontSize="10">
+            <text x="208" y={cy + 4} textAnchor="middle" fill="#64748B" fontSize="10" fontWeight="700">
               E
             </text>
-            <text x={cx} y="214" textAnchor="middle" fill="#94a3b8" fontSize="10">
+            <text x={cx} y="214" textAnchor="middle" fill="#64748B" fontSize="10" fontWeight="700">
               S
             </text>
-            <text x="12" y={cy + 4} textAnchor="middle" fill="#94a3b8" fontSize="10">
+            <text x="12" y={cy + 4} textAnchor="middle" fill="#64748B" fontSize="10" fontWeight="700">
               W
             </text>
 
@@ -161,7 +170,7 @@ export function AutoSweepOverlay({
                 y1={nullLine.y1}
                 x2={nullLine.x2}
                 y2={nullLine.y2}
-                stroke="#4ade80"
+                stroke="#15803D"
                 strokeWidth="3"
                 strokeDasharray="6 3"
               />
@@ -173,17 +182,18 @@ export function AutoSweepOverlay({
                 y1={cy}
                 x2={needleEnd.x}
                 y2={needleEnd.y}
-                stroke="#fbbf24"
-                strokeWidth="2.5"
+                stroke="#E84C22"
+                strokeWidth="2.6"
+                strokeLinecap="round"
               />
             )}
 
-            <circle cx={cx} cy={cy} r="5" fill="#fbbf24" stroke="#fff" strokeWidth="1.5" />
+            <circle cx={cx} cy={cy} r="5" fill="#141A21" stroke="#FFFFFF" strokeWidth="2" />
           </svg>
 
           <div className="sweep-stats">
             <div className="sweep-progress-row">
-              <span>覆盖进度</span>
+              <span>角度覆盖</span>
               <strong>
                 {snapshot.coveredBins * 10}° / 180° ({progressPct}%)
               </strong>
@@ -200,7 +210,7 @@ export function AutoSweepOverlay({
                 <>
                   <span className="sweep-deg">
                     {Math.round(snapshot.bearingDeg).toString().padStart(3, '0')}°
-                    {' ↔ '}
+                    {' / '}
                     {Math.round((snapshot.bearingDeg + 180) % 360)
                       .toString()
                       .padStart(3, '0')}
@@ -214,15 +224,17 @@ export function AutoSweepOverlay({
               ) : (
                 <span className="sweep-meta">
                   当前朝向：
-                  {currentHeadingDeg !== null
-                    ? `${Math.round(currentHeadingDeg)}°`
-                    : '等待罗盘'}
+                  <strong>
+                    {currentHeadingDeg !== null
+                      ? `${Math.round(currentHeadingDeg)}°`
+                      : '等待罗盘'}
+                  </strong>
                 </span>
               )}
             </div>
 
             <div className={`sweep-reason ${clipped ? 'warn' : snapshot.ready ? 'ok' : ''}`}>
-              {clipped ? '⚠ 音频爆音饱和，请调小测向机音量' : snapshot.reason}
+              {clipped ? '音频爆音饱和，请调小测向机音量' : snapshot.reason}
             </div>
           </div>
         </div>
@@ -232,10 +244,10 @@ export function AutoSweepOverlay({
           <div className="sweep-sim-box">
             <div className="sweep-sim-top">
               {virtualFieldActive ? (
-                <span>🏃 演练模式：按当前调谐电台的真实方位模拟转身</span>
+                <span>演练模式：按当前调谐电台的真实方位模拟转身</span>
               ) : (
                 <>
-                  <span>🧪 无硬件模拟测试（设定隐藏真实方向：{simNullDeg}°）</span>
+                  <span>无硬件模拟测试（隐藏真实方向：{simNullDeg}°）</span>
                   <button
                     type="button"
                     className="btn-ghost-sm"
@@ -261,7 +273,8 @@ export function AutoSweepOverlay({
                 onClick={onStartAutoSpinDemo}
                 disabled={simAutoSpinning}
               >
-                {simAutoSpinning ? '正在自动转半圈…' : '▶ 模拟自动转半圈'}
+                <IconPlay size={12} />
+                <span>{simAutoSpinning ? '旋转中…' : '模拟转半圈'}</span>
               </button>
             </div>
           </div>
@@ -269,11 +282,12 @@ export function AutoSweepOverlay({
 
         <div className="sweep-footer">
           <button type="button" className="btn-secondary" onClick={onRestart}>
-            重扫
+            <IconRefresh size={15} />
+            <span>重扫</span>
           </button>
           <button
             type="button"
-            className="btn-primary"
+            className="btn-accent"
             disabled={!snapshot.ready || snapshot.bearingDeg === null}
             onClick={() => {
               if (snapshot.bearingDeg !== null) {
@@ -281,9 +295,12 @@ export function AutoSweepOverlay({
               }
             }}
           >
-            {snapshot.ready && snapshot.bearingDeg !== null
-              ? `✓ 采用 ${Math.round(snapshot.bearingDeg)}° 落线到地图`
-              : '转满半圈后自动落线…'}
+            <IconCheck size={16} />
+            <span>
+              {snapshot.ready && snapshot.bearingDeg !== null
+                ? `采用 ${Math.round(snapshot.bearingDeg)}° 落线到地图`
+                : '转满半圈后自动落线…'}
+            </span>
           </button>
         </div>
       </div>

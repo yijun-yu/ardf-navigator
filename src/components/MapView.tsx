@@ -24,6 +24,11 @@ import type {
 } from '../core/types';
 import { loadAmap } from '../services/amapLoader';
 
+export interface MapControlHandles {
+  recenterMe: () => void;
+  recenterCampus: () => void;
+}
+
 interface MapViewProps {
   campus: CampusConfig;
   amapKey: string;
@@ -46,19 +51,25 @@ interface MapViewProps {
   canClickToMoveVirtualRunner?: boolean;
   onMoveVirtualRunner?: (pos: LngLat) => void;
   onSelectStation: (id: StationId) => void;
-  onToggleShowRoute: () => void;
-  onToggleShowAllRays: () => void;
   onSimOriginChange: (origin: LngLat | null) => void;
   onSimPreviewDegChange: (deg: number | null) => void;
   onRecordSimulatedBearing: (origin: LngLat, bearingDeg: number) => void;
   onAmapReady?: (amap: any | null) => void;
+  onControlsChange?: (
+    handles: MapControlHandles | null,
+    followUser: boolean,
+    gpsOutsideCampus: boolean,
+  ) => void;
   onOpenSettings: () => void;
 }
 
 type AmapStatus = 'no-key' | 'loading' | 'ready' | 'error';
 
 const RAY_DISPLAY_METERS = 1300;
-const OUTLIER_COLOR = '#94a3b8';
+const TRAIL_ACCENT = '#E84C22';
+const INK_DARK = '#141A21';
+const PUNCHED_GREEN = '#15803D';
+const OUTLIER_COLOR = '#94A3B8';
 
 export function MapView({
   campus,
@@ -82,12 +93,11 @@ export function MapView({
   canClickToMoveVirtualRunner,
   onMoveVirtualRunner,
   onSelectStation,
-  onToggleShowRoute,
-  onToggleShowAllRays,
   onSimOriginChange,
   onSimPreviewDegChange,
   onRecordSimulatedBearing,
   onAmapReady,
+  onControlsChange,
   onOpenSettings,
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -113,7 +123,6 @@ export function MapView({
   const [followUser, setFollowUser] = useState<boolean>(false);
   const [simAimPoint, setSimAimPoint] = useState<LngLat | null>(null);
 
-  // Keep latest simulation callbacks in refs so Amap event listeners never go stale
   const simRef = useRef({
     simMode,
     simOrigin,
@@ -133,7 +142,6 @@ export function MapView({
     onRecordSimulatedBearing,
   };
 
-  // Clear aim preview when leaving sim mode or resetting origin
   useEffect(() => {
     if (!simMode || !simOrigin) {
       setSimAimPoint(null);
@@ -177,10 +185,6 @@ export function MapView({
           mapStyle: 'amap://styles/normal',
           showBuildingBlock: false,
         });
-
-        if (AMap.Scale) {
-          map.addControl(new AMap.Scale({ position: 'LB' }));
-        }
 
         map.on('dragstart', () => setFollowUser(false));
 
@@ -233,7 +237,6 @@ export function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [amapKey, amapSecurityCode]);
 
-  // Cleanup map on unmount
   useEffect(() => {
     return () => {
       if (mapRef.current) {
@@ -243,7 +246,36 @@ export function MapView({
     };
   }, []);
 
-  // Update campus view & boundary polygon on Amap
+  const gpsInCampus = useMemo(() => {
+    if (!gps) return null;
+    return isPointInPolygon(gps.gcj, campus.boundary);
+  }, [gps, campus.boundary]);
+
+  // Expose map recenter controls upward so App positions FABs cleanly above the sheet
+  useEffect(() => {
+    if (status !== 'ready') {
+      onControlsChange?.(null, false, gpsInCampus === false);
+      return;
+    }
+    const handles: MapControlHandles = {
+      recenterMe: () => {
+        if (!mapRef.current || !gps) return;
+        setFollowUser(true);
+        mapRef.current.setZoomAndCenter(17, [gps.gcj.lng, gps.gcj.lat]);
+      },
+      recenterCampus: () => {
+        if (!mapRef.current) return;
+        setFollowUser(false);
+        mapRef.current.setZoomAndCenter(campus.defaultZoom, [
+          campus.center.lng,
+          campus.center.lat,
+        ]);
+      },
+    };
+    onControlsChange?.(handles, followUser, gpsInCampus === false);
+  }, [status, gps, campus, followUser, gpsInCampus, onControlsChange]);
+
+  // Update campus view & subtle topographic boundary polygon on Amap
   useEffect(() => {
     const map = mapRef.current;
     const AMap = amapRef.current;
@@ -260,19 +292,19 @@ export function MapView({
 
     const poly = new AMap.Polygon({
       path: campus.boundary.map((p) => [p.lng, p.lat]),
-      strokeColor: '#38bdf8',
-      strokeWeight: 2,
+      strokeColor: '#475569',
+      strokeWeight: 1.8,
       strokeStyle: 'dashed',
-      strokeOpacity: 0.85,
-      fillColor: '#0ea5e9',
-      fillOpacity: 0.05,
+      strokeOpacity: 0.65,
+      fillColor: '#1E293B',
+      fillOpacity: 0.025,
       bubble: true,
     });
     map.add(poly);
     boundaryPolyRef.current = poly;
   }, [campus, status]);
 
-  // Update live GPS blue dot, accuracy circle, and live heading line on Amap
+  // Update live GPS dot, accuracy circle, and live heading line on Amap
   useEffect(() => {
     const map = mapRef.current;
     const AMap = amapRef.current;
@@ -286,11 +318,11 @@ export function MapView({
         accCircleRef.current = new AMap.Circle({
           center: [anchor.lng, anchor.lat],
           radius: Math.max(4, gps.accuracy),
-          strokeColor: '#38bdf8',
+          strokeColor: '#2563EB',
           strokeWeight: 1,
-          strokeOpacity: 0.5,
-          fillColor: '#38bdf8',
-          fillOpacity: 0.14,
+          strokeOpacity: 0.35,
+          fillColor: '#2563EB',
+          fillOpacity: 0.1,
           bubble: true,
         });
         map.add(accCircleRef.current);
@@ -336,9 +368,9 @@ export function MapView({
       if (!headingLineRef.current) {
         headingLineRef.current = new AMap.Polyline({
           path: forwardPath,
-          strokeColor: '#f59e0b',
-          strokeWeight: 2.5,
-          strokeOpacity: 0.85,
+          strokeColor: TRAIL_ACCENT,
+          strokeWeight: 2.4,
+          strokeOpacity: 0.88,
           strokeStyle: 'solid',
           zIndex: 110,
           bubble: true,
@@ -357,9 +389,9 @@ export function MapView({
         if (!backLineRef.current) {
           backLineRef.current = new AMap.Polyline({
             path: backwardPath,
-            strokeColor: '#f59e0b',
+            strokeColor: TRAIL_ACCENT,
             strokeWeight: 2,
-            strokeOpacity: 0.45,
+            strokeOpacity: 0.42,
             strokeStyle: 'dashed',
             zIndex: 109,
             bubble: true,
@@ -375,7 +407,6 @@ export function MapView({
     }
   }, [gps, compass, bearingMode, campus.center, status, followUser]);
 
-  // Build quick outlier lookup map
   const outlierSet = useMemo(() => {
     const set = new Set<string>();
     for (const est of Object.values(estimates)) {
@@ -387,7 +418,6 @@ export function MapView({
     return set;
   }, [estimates]);
 
-  // Visible bearing observations (only active station by default to keep map clean)
   const visibleObservations = useMemo(() => {
     if (showAllRays) {
       return observations.filter((o) => targets.includes(o.stationId));
@@ -395,7 +425,7 @@ export function MapView({
     return observations.filter((o) => o.stationId === activeStation);
   }, [observations, showAllRays, activeStation, targets]);
 
-  // Render bearing rays on Amap
+  // Render bearing rays on Amap (clean ink / vermilion for active, muted gray for outliers)
   useEffect(() => {
     const map = mapRef.current;
     const AMap = amapRef.current;
@@ -409,10 +439,13 @@ export function MapView({
     const nextOverlays: any[] = [];
 
     for (const obs of visibleObservations) {
-      const st = getStation(obs.stationId);
       const isActive = obs.stationId === activeStation;
       const isOutlier = outlierSet.has(obs.id);
-      const strokeColor = isOutlier ? OUTLIER_COLOR : st.color;
+      const strokeColor = isOutlier
+        ? OUTLIER_COLOR
+        : isActive
+          ? TRAIL_ACCENT
+          : '#475569';
 
       const fwdEnd = destinationPoint(
         obs.origin,
@@ -425,8 +458,8 @@ export function MapView({
           [fwdEnd.lng, fwdEnd.lat],
         ],
         strokeColor,
-        strokeWeight: isOutlier ? 1.8 : isActive ? 2.5 : 1.7,
-        strokeOpacity: isOutlier ? 0.55 : isActive ? 0.9 : 0.45,
+        strokeWeight: isOutlier ? 1.6 : isActive ? 2.4 : 1.6,
+        strokeOpacity: isOutlier ? 0.55 : isActive ? 0.82 : 0.42,
         strokeStyle: isOutlier ? 'dashed' : 'solid',
         zIndex: isOutlier ? 80 : isActive ? 95 : 85,
         bubble: true,
@@ -445,8 +478,8 @@ export function MapView({
             [backEnd.lng, backEnd.lat],
           ],
           strokeColor,
-          strokeWeight: isOutlier ? 1.5 : isActive ? 1.8 : 1.3,
-          strokeOpacity: isOutlier ? 0.4 : isActive ? 0.52 : 0.25,
+          strokeWeight: isOutlier ? 1.4 : isActive ? 1.7 : 1.2,
+          strokeOpacity: isOutlier ? 0.35 : isActive ? 0.45 : 0.22,
           strokeStyle: 'dashed',
           zIndex: isOutlier ? 79 : isActive ? 94 : 84,
           bubble: true,
@@ -457,10 +490,10 @@ export function MapView({
       const originDot = new AMap.CircleMarker({
         center: [obs.origin.lng, obs.origin.lat],
         radius: isActive ? 4.5 : 3.5,
-        strokeColor: '#ffffff',
-        strokeWeight: 1.5,
+        strokeColor: '#FFFFFF',
+        strokeWeight: 1.8,
         fillColor: strokeColor,
-        fillOpacity: isOutlier ? 0.7 : 0.95,
+        fillOpacity: isOutlier ? 0.65 : 0.95,
         zIndex: isActive ? 105 : 92,
         bubble: true,
       });
@@ -473,7 +506,6 @@ export function MapView({
     }
   }, [visibleObservations, activeStation, outlierSet, status]);
 
-  // Quick lookup from stationId -> 1-based optimal visit order
   const orderMap = useMemo(() => {
     const map = new Map<StationId, number>();
     if (routePlan) {
@@ -482,7 +514,7 @@ export function MapView({
     return map;
   }, [routePlan]);
 
-  // Render optimal walking / running route polylines on Amap
+  // Render optimal walking / running route polylines on Amap (white halo + trail vermilion #E84C22!)
   useEffect(() => {
     const map = mapRef.current;
     const AMap = amapRef.current;
@@ -497,7 +529,6 @@ export function MapView({
 
     const nextOverlays: any[] = [];
 
-    // Draw subsequent legs first (underneath active first leg)
     for (let i = routePlan.legs.length - 1; i >= 0; i--) {
       const leg = routePlan.legs[i];
       if (leg.path.length < 2) continue;
@@ -505,13 +536,13 @@ export function MapView({
       const isFirst = i === 0;
 
       if (isFirst) {
-        // Subtle outer glow for primary sprint leg
+        // High-contrast white halo casing so route pops over Qizhen Lake, parks & yellow roads
         nextOverlays.push(
           new AMap.Polyline({
             path: pathArr,
-            strokeColor: '#0284c7',
-            strokeWeight: 8,
-            strokeOpacity: 0.3,
+            strokeColor: '#FFFFFF',
+            strokeWeight: 9,
+            strokeOpacity: 0.92,
             lineJoin: 'round',
             lineCap: 'round',
             zIndex: 116,
@@ -521,9 +552,9 @@ export function MapView({
         nextOverlays.push(
           new AMap.Polyline({
             path: pathArr,
-            strokeColor: '#22d3ee',
-            strokeWeight: 4.5,
-            strokeOpacity: 0.96,
+            strokeColor: TRAIL_ACCENT,
+            strokeWeight: 5,
+            strokeOpacity: 0.98,
             strokeStyle: leg.isRealRoad ? 'solid' : 'dashed',
             showDir: true,
             lineJoin: 'round',
@@ -536,9 +567,21 @@ export function MapView({
         nextOverlays.push(
           new AMap.Polyline({
             path: pathArr,
-            strokeColor: '#38bdf8',
-            strokeWeight: 3.2,
-            strokeOpacity: 0.62,
+            strokeColor: '#FFFFFF',
+            strokeWeight: 5.5,
+            strokeOpacity: 0.72,
+            lineJoin: 'round',
+            lineCap: 'round',
+            zIndex: 111,
+            bubble: true,
+          }),
+        );
+        nextOverlays.push(
+          new AMap.Polyline({
+            path: pathArr,
+            strokeColor: '#1E293B',
+            strokeWeight: 3,
+            strokeOpacity: 0.68,
             strokeStyle: leg.isRealRoad ? 'solid' : 'dashed',
             showDir: leg.isRealRoad,
             lineJoin: 'round',
@@ -577,18 +620,23 @@ export function MapView({
       const isActive = id === activeStation;
       const isPunched = punched.includes(id);
       const orderNum = !isPunched && showRoute ? orderMap.get(id) : undefined;
-      const color = isPunched ? '#22c55e' : st.color;
+      const isHighlight = isActive || orderNum === 1;
+      const color = isPunched
+        ? PUNCHED_GREEN
+        : isHighlight
+          ? TRAIL_ACCENT
+          : INK_DARK;
 
       const errCircle = new AMap.Circle({
         center: [est.position.lng, est.position.lat],
         radius: est.errorRadiusM,
         strokeColor: color,
-        strokeWeight: isActive ? 2.2 : 1.5,
-        strokeOpacity: isPunched ? 0.45 : isActive ? 0.9 : 0.65,
+        strokeWeight: isHighlight ? 2 : 1.4,
+        strokeOpacity: isPunched ? 0.35 : isHighlight ? 0.82 : 0.52,
         strokeStyle: est.status === 'coarse' ? 'dashed' : 'solid',
         fillColor: color,
-        fillOpacity: isPunched ? 0.06 : isActive ? 0.16 : 0.1,
-        zIndex: isActive ? 130 : 122,
+        fillOpacity: isPunched ? 0.06 : isHighlight ? 0.14 : 0.08,
+        zIndex: isHighlight ? 130 : 122,
         bubble: true,
       });
       nextOverlays.push(errCircle);
@@ -598,14 +646,14 @@ export function MapView({
         : '';
 
       const pinHtml = `
-        <div class="amap-station-pin ${isActive ? 'active' : ''} ${isPunched ? 'punched' : ''}">
+        <div class="amap-station-pin ${isHighlight ? 'active' : ''} ${isPunched ? 'punched' : ''}">
           <div class="amap-pin-wrap">
             <div class="amap-pin-badge" style="background:${color}">
               ${isPunched ? '✓' : st.id}
             </div>
             ${orderBadgeHtml}
           </div>
-          <div class="amap-pin-sub">${isPunched ? `${st.id}已打` : `±${est.errorRadiusM}m`}</div>
+          <div class="amap-pin-sub">${isPunched ? `${st.id} 已打` : `±${est.errorRadiusM}m`}</div>
         </div>
       `;
       const pinMarker = new AMap.Marker({
@@ -626,7 +674,16 @@ export function MapView({
       map.add(nextOverlays);
       estimateOverlaysRef.current = nextOverlays;
     }
-  }, [targets, estimates, activeStation, punched, showRoute, orderMap, status, onSelectStation]);
+  }, [
+    targets,
+    estimates,
+    activeStation,
+    punched,
+    showRoute,
+    orderMap,
+    status,
+    onSelectStation,
+  ]);
 
   // Render simulated standing point & aim preview line on Amap
   useEffect(() => {
@@ -660,9 +717,9 @@ export function MapView({
             [simOrigin.lng, simOrigin.lat],
             [fwd.lng, fwd.lat],
           ],
-          strokeColor: '#fbbf24',
-          strokeWeight: 2.5,
-          strokeOpacity: 0.9,
+          strokeColor: TRAIL_ACCENT,
+          strokeWeight: 2.6,
+          strokeOpacity: 0.92,
           strokeStyle: 'solid',
           zIndex: 155,
           bubble: true,
@@ -676,9 +733,9 @@ export function MapView({
               [simOrigin.lng, simOrigin.lat],
               [back.lng, back.lat],
             ],
-            strokeColor: '#fbbf24',
+            strokeColor: TRAIL_ACCENT,
             strokeWeight: 2,
-            strokeOpacity: 0.5,
+            strokeOpacity: 0.45,
             strokeStyle: 'dashed',
             zIndex: 154,
             bubble: true,
@@ -691,7 +748,7 @@ export function MapView({
     simOverlaysRef.current = nextOverlays;
   }, [simMode, simOrigin, simAimPoint, bearingMode, status]);
 
-  // Render optional virtual ground-truth markers (review mode) & desktop virtual runner dot on Amap
+  // Render optional virtual ground-truth markers & desktop virtual runner dot on Amap
   useEffect(() => {
     const map = mapRef.current;
     const AMap = amapRef.current;
@@ -708,7 +765,7 @@ export function MapView({
           new AMap.Marker({
             position: [tx.position.lng, tx.position.lat],
             content: `<div class="amap-truth-pin ${tx.isTarget ? 'target' : 'decoy'}">${
-              tx.isTarget ? `真${tx.stationId}` : `扰${tx.stationId}`
+              tx.isTarget ? `真 ${tx.stationId}` : `扰 ${tx.stationId}`
             }</div>`,
             offset: new AMap.Pixel(-18, -11),
             zIndex: 145,
@@ -735,41 +792,15 @@ export function MapView({
     }
   }, [virtualTruths, virtualRunnerPos, gps, status]);
 
-  const handleRecenterMe = () => {
-    if (!mapRef.current || !gps) return;
-    setFollowUser(true);
-    mapRef.current.setZoomAndCenter(17, [gps.gcj.lng, gps.gcj.lat]);
-  };
-
-  const handleRecenterCampus = () => {
-    if (!mapRef.current) return;
-    setFollowUser(false);
-    mapRef.current.setZoomAndCenter(campus.defaultZoom, [
-      campus.center.lng,
-      campus.center.lat,
-    ]);
-  };
-
-  const gpsInCampus = useMemo(() => {
-    if (!gps) return null;
-    return isPointInPolygon(gps.gcj, campus.boundary);
-  }, [gps, campus.boundary]);
-
-  const activeSpec = getStation(activeStation);
-  const simPreviewDeg =
-    simMode && simOrigin && simAimPoint
-      ? Math.round(bearingBetween(simOrigin, simAimPoint))
-      : null;
-
   return (
     <div className={`map-stage ${simMode ? 'sim-active' : ''}`}>
-      {/* Real Amap container */}
+      {/* Real full-bleed Amap container */}
       <div
         ref={containerRef}
         className={`amap-canvas ${status === 'ready' ? 'visible' : 'hidden'}`}
       />
 
-      {/* Fallback local coordinate grid when Amap Key is not configured yet */}
+      {/* Topographic daylight preview when Amap Key is not yet set */}
       {status !== 'ready' && (
         <FallbackCampusRadar
           campus={campus}
@@ -808,81 +839,6 @@ export function MapView({
           onOpenSettings={onOpenSettings}
         />
       )}
-
-      {/* Simulation guidance banner */}
-      {simMode && (
-        <div className="sim-guide-bar">
-          <div className="sim-guide-text">
-            <strong>🧪 模拟打点 · {activeSpec.label}</strong>
-            <span>
-              {!simOrigin
-                ? '第 1 步：点击地图放置模拟站位'
-                : `第 2 步：点击目标方向打出${bearingMode === 'bidirectional' ? '双向' : '单向'}线${
-                    simPreviewDeg !== null ? `（${simPreviewDeg}°）` : ''
-                  }`}
-            </span>
-          </div>
-          {simOrigin && (
-            <button
-              type="button"
-              className="btn-ghost-sm"
-              onClick={() => onSimOriginChange(null)}
-            >
-              重选站位
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Floating map controls (right side, thumb-accessible) */}
-      <div className="map-fab-stack">
-        <button
-          type="button"
-          className={`map-fab ${showRoute ? 'active' : ''}`}
-          onClick={onToggleShowRoute}
-          title={showRoute ? '隐藏推荐路线' : '显示最优跑步路线'}
-        >
-          路线
-        </button>
-
-        <button
-          type="button"
-          className={`map-fab ${showAllRays ? 'active' : ''}`}
-          onClick={onToggleShowAllRays}
-          title={showAllRays ? '仅看当前台射线' : '显示全部目标台射线'}
-        >
-          {showAllRays ? '全线' : '单台'}
-        </button>
-
-        {status === 'ready' && (
-          <>
-            <button
-              type="button"
-              className={`map-fab ${followUser ? 'active' : ''}`}
-              onClick={handleRecenterMe}
-              disabled={!gps}
-              title="定位到我"
-            >
-              ◎
-            </button>
-            <button
-              type="button"
-              className="map-fab"
-              onClick={handleRecenterCampus}
-              title="回到校区全览"
-            >
-              校
-            </button>
-          </>
-        )}
-      </div>
-
-      {/* Warning banner if GPS is outside currently selected campus */}
-      {gpsInCampus === false && !simMode && (
-        <div className="map-floating-pill warn">
-          当前定位不在{campus.shortName}校区范围内（可顶部切换校区）
-        </div>
-      )}
     </div>
   );
 }
@@ -918,8 +874,7 @@ interface FallbackProps {
 }
 
 /**
- * Interactive local-meter SVG preview rendered when Amap Key is not yet set,
- * supporting full Stage 2 rays, error circles, outlier styling, Stage 4 routes, and click-to-simulate.
+ * Topographic daylight local-meter SVG map rendered when Amap Key is not set yet.
  */
 function FallbackCampusRadar({
   campus,
@@ -1060,7 +1015,7 @@ function FallbackCampusRadar({
         ref={svgRef}
         viewBox="0 0 500 500"
         className={`radar-svg ${simMode || canClickToMoveVirtualRunner ? 'crosshair' : ''}`}
-        aria-label="本地校区预览"
+        aria-label="本地校区地形预览"
         onClick={handleSvgClick}
         onMouseMove={handleSvgMove}
       >
@@ -1070,22 +1025,30 @@ function FallbackCampusRadar({
           </clipPath>
         </defs>
 
-        {/* Subtle coordinate grid */}
+        {/* Subtle topographic coordinate grid */}
         {[100, 175, 250, 325, 400].map((v) => (
-          <g key={v} stroke="rgba(148,163,184,0.12)" strokeWidth="1">
+          <g key={v} stroke="#DFDAC8" strokeWidth="1">
             <line x1={v} y1="20" x2={v} y2="480" />
             <line x1="20" y1={v} x2="480" y2={v} />
           </g>
         ))}
+
+        {/* Decorative subtle topo contour rings */}
+        <g fill="none" stroke="#D8D2BE" strokeWidth="1" opacity="0.65">
+          <ellipse cx="140" cy="170" rx="85" ry="52" />
+          <ellipse cx="140" cy="170" rx="52" ry="30" />
+          <ellipse cx="365" cy="340" rx="95" ry="58" />
+          <ellipse cx="365" cy="340" rx="56" ry="34" />
+        </g>
 
         {/* North indicator */}
         <text
           x="250"
           y="34"
           textAnchor="middle"
-          fill="#38bdf8"
-          fontSize="14"
-          fontWeight="700"
+          fill={TRAIL_ACCENT}
+          fontSize="13"
+          fontWeight="800"
         >
           N 北
         </text>
@@ -1094,30 +1057,34 @@ function FallbackCampusRadar({
           {/* Campus polygon */}
           <polygon
             points={polyPoints}
-            fill="rgba(14, 165, 233, 0.10)"
-            stroke="#38bdf8"
-            strokeWidth="2"
+            fill="rgba(216, 228, 196, 0.45)"
+            stroke="#5F7059"
+            strokeWidth="1.8"
             strokeDasharray="6 4"
           />
 
           {/* Campus center crosshair */}
-          <circle cx="250" cy="250" r="3" fill="#64748b" />
+          <circle cx="250" cy="250" r="2.8" fill="#64748B" />
           <text
             x="250"
-            y="268"
+            y="266"
             textAnchor="middle"
-            fill="#64748b"
+            fill="#6B7280"
             fontSize="10"
+            fontWeight="600"
           >
             {campus.shortName}中心
           </text>
 
           {/* Recorded bearing rays */}
           {visibleObservations.map((obs) => {
-            const st = getStation(obs.stationId);
             const isActive = obs.stationId === activeStation;
             const isOutlier = outlierSet.has(obs.id);
-            const strokeColor = isOutlier ? OUTLIER_COLOR : st.color;
+            const strokeColor = isOutlier
+              ? OUTLIER_COLOR
+              : isActive
+                ? TRAIL_ACCENT
+                : '#475569';
             const oSvg = lngLatToSvg(obs.origin);
             const fSvg = lngLatToSvg(
               destinationPoint(obs.origin, obs.bearingDeg, RAY_DISPLAY_METERS),
@@ -1143,7 +1110,7 @@ function FallbackCampusRadar({
                   stroke={strokeColor}
                   strokeWidth={isOutlier ? 1.5 : isActive ? 2.2 : 1.4}
                   strokeDasharray={isOutlier ? '5 4' : undefined}
-                  opacity={isOutlier ? 0.55 : isActive ? 0.9 : 0.45}
+                  opacity={isOutlier ? 0.55 : isActive ? 0.85 : 0.45}
                 />
                 {bSvg && (
                   <line
@@ -1152,9 +1119,9 @@ function FallbackCampusRadar({
                     x2={bSvg.sx}
                     y2={bSvg.sy}
                     stroke={strokeColor}
-                    strokeWidth={isOutlier ? 1.3 : isActive ? 1.6 : 1.2}
+                    strokeWidth={isOutlier ? 1.2 : isActive ? 1.5 : 1.1}
                     strokeDasharray="5 4"
-                    opacity={isOutlier ? 0.35 : isActive ? 0.5 : 0.25}
+                    opacity={isOutlier ? 0.35 : isActive ? 0.45 : 0.25}
                   />
                 )}
                 <circle
@@ -1162,8 +1129,8 @@ function FallbackCampusRadar({
                   cy={oSvg.sy}
                   r={isActive ? 4 : 3}
                   fill={strokeColor}
-                  stroke="#ffffff"
-                  strokeWidth="1.2"
+                  stroke="#FFFFFF"
+                  strokeWidth="1.4"
                 />
               </g>
             );
@@ -1183,26 +1150,24 @@ function FallbackCampusRadar({
                   .join(' ');
                 return (
                   <g key={`route-leg-${idx}`}>
-                    {isFirst && (
-                      <polyline
-                        points={pts}
-                        fill="none"
-                        stroke="#0284c7"
-                        strokeWidth="7"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        opacity="0.32"
-                      />
-                    )}
                     <polyline
                       points={pts}
                       fill="none"
-                      stroke={isFirst ? '#22d3ee' : '#38bdf8'}
-                      strokeWidth={isFirst ? 3.5 : 2.3}
+                      stroke="#FFFFFF"
+                      strokeWidth={isFirst ? 7.5 : 4.8}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      opacity={isFirst ? 0.92 : 0.72}
+                    />
+                    <polyline
+                      points={pts}
+                      fill="none"
+                      stroke={isFirst ? TRAIL_ACCENT : '#1E293B'}
+                      strokeWidth={isFirst ? 4 : 2.3}
                       strokeDasharray={isFirst ? undefined : '6 4'}
                       strokeLinecap="round"
                       strokeLinejoin="round"
-                      opacity={isFirst ? 0.96 : 0.62}
+                      opacity={isFirst ? 0.98 : 0.65}
                     />
                   </g>
                 );
@@ -1218,7 +1183,12 @@ function FallbackCampusRadar({
             const isActive = id === activeStation;
             const isPunched = punched.includes(id);
             const orderNum = !isPunched && showRoute ? orderMap.get(id) : undefined;
-            const color = isPunched ? '#22c55e' : st.color;
+            const isHighlight = isActive || orderNum === 1;
+            const color = isPunched
+              ? PUNCHED_GREEN
+              : isHighlight
+                ? TRAIL_ACCENT
+                : INK_DARK;
             const posSvg = lngLatToSvg(est.position);
             const radiusPx = Math.max(4, est.errorRadiusM * scalePxPerMeter);
 
@@ -1238,25 +1208,25 @@ function FallbackCampusRadar({
                   cy={posSvg.sy}
                   r={radiusPx}
                   fill={color}
-                  fillOpacity={isPunched ? 0.08 : isActive ? 0.18 : 0.11}
+                  fillOpacity={isPunched ? 0.08 : isHighlight ? 0.14 : 0.08}
                   stroke={color}
-                  strokeWidth={isActive ? 2 : 1.4}
+                  strokeWidth={isHighlight ? 2 : 1.4}
                   strokeDasharray={est.status === 'coarse' ? '5 3' : undefined}
-                  opacity={isPunched ? 0.55 : 0.95}
+                  opacity={isPunched ? 0.45 : 0.9}
                 />
                 <circle
                   cx={posSvg.sx}
                   cy={posSvg.sy}
-                  r={isActive ? 11 : 9}
+                  r={isHighlight ? 11 : 9.5}
                   fill={color}
-                  stroke="#ffffff"
-                  strokeWidth={isActive ? 2.2 : 1.6}
+                  stroke="#FFFFFF"
+                  strokeWidth="2.2"
                 />
                 <text
                   x={posSvg.sx}
                   y={posSvg.sy + 3.5}
                   textAnchor="middle"
-                  fill="#ffffff"
+                  fill="#FFFFFF"
                   fontSize={st.id.length > 1 ? 8 : 10}
                   fontWeight="800"
                 >
@@ -1268,15 +1238,15 @@ function FallbackCampusRadar({
                       cx={posSvg.sx + 10}
                       cy={posSvg.sy - 10}
                       r="7.5"
-                      fill={orderNum === 1 ? '#22d3ee' : '#0f172a'}
-                      stroke={orderNum === 1 ? '#ffffff' : '#38bdf8'}
-                      strokeWidth="1.4"
+                      fill={orderNum === 1 ? TRAIL_ACCENT : INK_DARK}
+                      stroke="#FFFFFF"
+                      strokeWidth="1.5"
                     />
                     <text
                       x={posSvg.sx + 10}
                       y={posSvg.sy - 6.8}
                       textAnchor="middle"
-                      fill={orderNum === 1 ? '#041322' : '#e0f2fe'}
+                      fill="#FFFFFF"
                       fontSize="9.5"
                       fontWeight="900"
                     >
@@ -1286,16 +1256,16 @@ function FallbackCampusRadar({
                 )}
                 <text
                   x={posSvg.sx}
-                  y={posSvg.sy + 22}
+                  y={posSvg.sy + 23}
                   textAnchor="middle"
-                  fill="#f8fafc"
+                  fill={INK_DARK}
                   fontSize="9.5"
-                  fontWeight="700"
+                  fontWeight="800"
                   paintOrder="stroke"
-                  stroke="#0b1220"
-                  strokeWidth="3"
+                  stroke="#FFFFFF"
+                  strokeWidth="3.2"
                 >
-                  {isPunched ? `${st.id}已打` : `±${est.errorRadiusM}m`}
+                  {isPunched ? `${st.id} 已打` : `±${est.errorRadiusM}m`}
                 </text>
               </g>
             );
@@ -1310,8 +1280,8 @@ function FallbackCampusRadar({
                   y1={simOriginSvg.sy}
                   x2={simAimSvgFwd.sx}
                   y2={simAimSvgFwd.sy}
-                  stroke="#fbbf24"
-                  strokeWidth="2.2"
+                  stroke={TRAIL_ACCENT}
+                  strokeWidth="2.4"
                 />
               )}
               {simAimSvgBack && (
@@ -1320,24 +1290,24 @@ function FallbackCampusRadar({
                   y1={simOriginSvg.sy}
                   x2={simAimSvgBack.sx}
                   y2={simAimSvgBack.sy}
-                  stroke="#fbbf24"
+                  stroke={TRAIL_ACCENT}
                   strokeWidth="1.8"
                   strokeDasharray="6 4"
-                  opacity="0.5"
+                  opacity="0.45"
                 />
               )}
               <circle
                 cx={simOriginSvg.sx}
                 cy={simOriginSvg.sy}
                 r="9"
-                fill="rgba(251, 191, 36, 0.25)"
+                fill="rgba(232, 76, 34, 0.2)"
               />
               <circle
                 cx={simOriginSvg.sx}
                 cy={simOriginSvg.sy}
                 r="5"
-                fill="#fbbf24"
-                stroke="#ffffff"
+                fill={TRAIL_ACCENT}
+                stroke="#FFFFFF"
                 strokeWidth="2"
               />
             </g>
@@ -1351,8 +1321,8 @@ function FallbackCampusRadar({
                 y1={clampedUser.sy}
                 x2={fwdX}
                 y2={fwdY}
-                stroke="#f59e0b"
-                strokeWidth="2.5"
+                stroke={TRAIL_ACCENT}
+                strokeWidth="2.4"
               />
               {bearingMode === 'bidirectional' && (
                 <line
@@ -1360,10 +1330,10 @@ function FallbackCampusRadar({
                   y1={clampedUser.sy}
                   x2={backX}
                   y2={backY}
-                  stroke="#f59e0b"
-                  strokeWidth="2"
+                  stroke={TRAIL_ACCENT}
+                  strokeWidth="1.8"
                   strokeDasharray="6 5"
-                  opacity="0.55"
+                  opacity="0.45"
                 />
               )}
             </>
@@ -1373,54 +1343,56 @@ function FallbackCampusRadar({
           {virtualTruths &&
             virtualTruths.map((tx) => {
               const p = lngLatToSvg(tx.position);
-              const fill = tx.isTarget ? '#c084fc' : '#64748b';
+              const fill = tx.isTarget ? '#141A21' : '#94A3B8';
               return (
                 <g key={`truth-${tx.stationId}`}>
                   <polygon
                     points={`${p.sx},${p.sy - 8} ${p.sx + 8},${p.sy} ${p.sx},${p.sy + 8} ${p.sx - 8},${p.sy}`}
                     fill={fill}
-                    stroke="#ffffff"
-                    strokeWidth="1.4"
+                    stroke="#FFFFFF"
+                    strokeWidth="1.6"
                   />
                   <text
                     x={p.sx}
                     y={p.sy - 11}
                     textAnchor="middle"
-                    fill={tx.isTarget ? '#e9d5ff' : '#cbd5e1'}
+                    fill={INK_DARK}
                     fontSize="9"
                     fontWeight="800"
                     paintOrder="stroke"
-                    stroke="#0b1220"
-                    strokeWidth="2.5"
+                    stroke="#FFFFFF"
+                    strokeWidth="2.8"
                   >
-                    {tx.isTarget ? `真${tx.stationId}` : `扰${tx.stationId}`}
+                    {tx.isTarget ? `真 ${tx.stationId}` : `扰 ${tx.stationId}`}
                   </text>
                 </g>
               );
             })}
 
           {/* Desktop virtual runner dot when no real GPS */}
-          {virtualRunnerPos && !gps && (() => {
-            const vp = lngLatToSvg(virtualRunnerPos);
-            return (
-              <g>
-                <circle
-                  cx={vp.sx}
-                  cy={vp.sy}
-                  r="11"
-                  fill="rgba(167, 139, 250, 0.25)"
-                />
-                <circle
-                  cx={vp.sx}
-                  cy={vp.sy}
-                  r="6"
-                  fill="#a78bfa"
-                  stroke="#ffffff"
-                  strokeWidth="2"
-                />
-              </g>
-            );
-          })()}
+          {virtualRunnerPos &&
+            !gps &&
+            (() => {
+              const vp = lngLatToSvg(virtualRunnerPos);
+              return (
+                <g>
+                  <circle
+                    cx={vp.sx}
+                    cy={vp.sy}
+                    r="11"
+                    fill="rgba(37, 99, 235, 0.2)"
+                  />
+                  <circle
+                    cx={vp.sx}
+                    cy={vp.sy}
+                    r="6"
+                    fill="#2563EB"
+                    stroke="#FFFFFF"
+                    strokeWidth="2.2"
+                  />
+                </g>
+              );
+            })()}
 
           {/* User GPS dot */}
           {gps && (
@@ -1429,15 +1401,15 @@ function FallbackCampusRadar({
                 cx={clampedUser.sx}
                 cy={clampedUser.sy}
                 r="12"
-                fill="rgba(56,189,248,0.22)"
+                fill="rgba(37, 99, 235, 0.18)"
               />
               <circle
                 cx={clampedUser.sx}
                 cy={clampedUser.sy}
                 r="6"
-                fill="#38bdf8"
-                stroke="#ffffff"
-                strokeWidth="2"
+                fill="#2563EB"
+                stroke="#FFFFFF"
+                strokeWidth="2.2"
               />
             </>
           )}
@@ -1450,10 +1422,8 @@ function FallbackCampusRadar({
             {status === 'loading' && '正在加载高德地图…'}
             {status === 'no-key' && (
               <>
-                <strong>本地坐标预览（可点右上角 🧪 直接点图模拟打点）</strong>
-                <span>
-                  填入高德 Web JS API Key 后显示{campus.shortName}真实校园道路
-                </span>
+                <strong>本地地形预览模式</strong>
+                <span>配置高德 Web Key 即可显示{campus.shortName}真实道路</span>
               </>
             )}
             {status === 'error' && (
@@ -1468,14 +1438,14 @@ function FallbackCampusRadar({
             className="btn-primary-sm"
             onClick={onOpenSettings}
           >
-            高德 Key
+            填高德 Key
           </button>
         </div>
       )}
 
       {compass && (
         <div className="radar-heading-chip">
-          朝向 {Math.round(compass.heading)}° ({headingToCardinal(compass.heading)})
+          {Math.round(compass.heading)}° {headingToCardinal(compass.heading)}
         </div>
       )}
     </div>

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { AppSettings, CompassReading, GpsFix } from '../core/types';
+import { IconClose } from './Icons';
 
 interface SettingsModalProps {
   settings: AppSettings;
@@ -52,8 +53,13 @@ export function SettingsModal({
             <h2>高德地图与传感器设置</h2>
             <p className="modal-sub">配置仅保存在本机浏览器 localStorage 中</p>
           </div>
-          <button type="button" className="icon-close" onClick={onClose}>
-            ✕
+          <button
+            type="button"
+            className="icon-close"
+            onClick={onClose}
+            aria-label="关闭"
+          >
+            <IconClose size={16} />
           </button>
         </div>
 

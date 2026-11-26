@@ -6,6 +6,7 @@ import {
   STATIONS,
 } from '../core/stations';
 import type { StationId } from '../core/types';
+import { IconClose, IconRefresh } from './Icons';
 
 interface TargetSetupModalProps {
   initialTargets: StationId[];
@@ -36,13 +37,14 @@ export function TargetSetupModal({
     setSelected(drawRandomSixTargets());
   };
 
-  const numberCount = selected.filter((id) => NUMBER_STATION_IDS.includes(id)).length;
+  const numberCount = selected.filter((id) =>
+    NUMBER_STATION_IDS.includes(id),
+  ).length;
   const hasMo = selected.includes('MO');
   const isStandardSix = selected.length === 6 && numberCount === 5 && hasMo;
 
   const handleSave = () => {
     if (selected.length === 0) return;
-    // Keep neat ordering: 1..9, 0, MO
     const order = STATIONS.map((s) => s.id);
     const sorted = [...selected].sort(
       (a, b) => order.indexOf(a) - order.indexOf(b),
@@ -60,18 +62,28 @@ export function TargetSetupModal({
               标准规则：0~9 任选 5 个 + MO 台（共 6 台，认错或漏找 +1 小时）
             </p>
           </div>
-          <button type="button" className="icon-close" onClick={onClose}>
-            ✕
+          <button
+            type="button"
+            className="icon-close"
+            onClick={onClose}
+            aria-label="关闭"
+          >
+            <IconClose size={16} />
           </button>
         </div>
 
         <div className="target-status-bar">
           <span>
             已选 <strong>{selected.length}</strong> / 6 台
-            {isStandardSix ? '（符合标准 5+MO）' : ''}
+            {isStandardSix ? '（标准 5+MO）' : ''}
           </span>
-          <button type="button" className="btn-ghost-sm" onClick={handleRandomDraw}>
-            🎲 随机抽 5+MO
+          <button
+            type="button"
+            className="btn-ghost-sm"
+            onClick={handleRandomDraw}
+          >
+            <IconRefresh size={13} />
+            <span>随机抽 5+MO</span>
           </button>
         </div>
 
@@ -86,14 +98,9 @@ export function TargetSetupModal({
                 className={`station-pick-card ${active ? 'active' : ''}`}
                 disabled={disabled}
                 onClick={() => toggleStation(st.id)}
-                style={
-                  active
-                    ? { borderColor: st.color, boxShadow: `0 0 0 1px ${st.color} inset` }
-                    : undefined
-                }
               >
                 <div className="pick-top">
-                  <span className="pick-badge" style={{ background: st.color }}>
+                  <span className={`pick-badge ${active ? 'active' : ''}`}>
                     {st.id}
                   </span>
                   <span className="pick-call">{st.callsign}</span>
